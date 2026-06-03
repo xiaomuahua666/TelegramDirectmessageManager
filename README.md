@@ -39,7 +39,7 @@ pip install aiogram
 创建 `token.txt` 文件，写入你的 Token（仅一行）：
 
 ```
-8790115233:AAE8_xtARTpq4L4R8XFm6zCXLGASVVOtp4A
+BotFather创建自己的
 ```
 
 ### 4. 配置 config.json
@@ -47,7 +47,7 @@ pip install aiogram
 ```json
 {
   "enabled": true,
-  "owner_id": 5455684444,
+  "owner_id": 本人TelegramID,
   "ignore_owner": true,
   "reply_mode": true,
   "delay": {
@@ -56,17 +56,17 @@ pip install aiogram
     "max": 200
   },
   "default_reply": [
-    "<jh>[BotReply]</jh><yy>您好，有什么可以帮助你的吗？</yy>",
-    "<jh>[BotReply]</jh><yy>请稍等，我会尽快回复你的。</yy>"
+    "填内容 1",
+    "填内容 2"
   ],
   "rules": [
     {
-      "keywords": ["U", "u"],
-      "reply": "<yy><jd>广告滚开😇</jd></yy>"
+      "keywords": ["关键词 1", "关键词 2"],
+      "reply": "填内容"
     },
     {
-      "keywords": ["1", "2", "3"],
-      "reply": "<jh>[BotReply]</jh><yy>有</n>事</n>请</n>直</n>说</yy>"
+      "keywords": ["关键词 1", "关键词 2", "关键词 3"],
+      "reply": "填内容"
     }
   ],
   "blacklist": []
