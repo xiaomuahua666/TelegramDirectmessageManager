@@ -277,7 +277,7 @@ TGDM 支持丰富的自定义标签，用于格式化机器人的回复消息，
 | `<xh>text</xh>`            | 下划线       | `<xh>重点标记</xh>`                     |
 | `<js>text</js>`            | 代码块       | `<js>def test():\n  return True</js>` |
 | `<jh>text</jh>`            | 剧透/模糊    | `<jh>猜猜是什么</jh>`                   |
-| `<lj url="URL">text</lj>`| 超链接       | `<lj url="https://example.com">点击</lj>`|
+| `<lj url="URL">text</lj>`| 超链接       | `<lj url=\"https://example.com\">点击</lj>`|
 | `<tj>user_id</tj>`        | 用户提及     | `<tj>123456789</tj>`                   |
 | `<em id="数字ID">fallback</em>`| Premium Emoji | `<em id="6323518884347381156">👋</em>`|
 | `</n>`                     | 换行         | `第一行</n>第二行`                       |
