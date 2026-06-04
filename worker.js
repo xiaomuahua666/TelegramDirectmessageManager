@@ -1,50 +1,39 @@
 // ==================== Telegram DM Bot for Cloudflare Workers ====================
-// 环境变量配置：
-// - TG_TOKEN：Bot Token（密钥类型）
-// - ADMIN_TOKEN：管理端点鉴权 Token（密钥类型）
-// - WEBHOOK_SECRET：Telegram Webhook Secret Token（密钥类型）
-// - BOT_ENABLED：机器人总开关（纯文本）
-// - OWNER_ID：管理员 ID（纯文本）
-// - IGNORE_OWNER：是否忽略管理员（纯文本）
-// - REPLY_MODE：是否引用回复（纯文本）
-// - DELAY_ENABLED：是否启用延迟（纯文本）
-// - DELAY_MIN：最小延迟毫秒数（纯文本）
-// - DELAY_MAX：最大延迟毫秒数（纯文本）
-// - TYPING_ENABLED：是否发送"正在输入"状态（纯文本）
-// - COOLDOWN_ENABLED：是否启用用户冷却（纯文本）
-// - COOLDOWN_SECONDS：冷却秒数（纯文本）
-// - DEFAULT_REPLY：默认回复数组（JSON 类型）
-// - RULES：关键词匹配规则（JSON 类型）
-// - BLACKLIST：黑名单用户 ID 数组（JSON 类型）
+// TG_TOKEN / ADMIN_TOKEN / WEBHOOK_SECRET / BOT_ENABLED / OWNER_ID
+// IGNORE_OWNER / REPLY_MODE / DELAY_ENABLED / DELAY_MIN / DELAY_MAX
+// TYPING_ENABLED / COOLDOWN_ENABLED / COOLDOWN_SECONDS
+// DEFAULT_REPLY / RULES / BLACKLIST
 // ==================== 代码开始 ====================
 
+const cooldownMap = new Map();
+const shuffleMap = new Map();
 
-// ==================== 冷却时间（内存） ====================
+// Fisher-Yates 洗牌
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
-const cooldownMap = new Map(); // uid -> timestamp(ms)
-
-
-// ==================== 标签转换函数 ====================
+// ==================== 标签转换 ====================
 
 function convertTagsToHTML(text) {
   if (!text) return '';
 
-  // 换行标签
   let html = text.replace(/<\/n>/g, '\n');
 
-  // 链接标签 <lj url="URL">text</lj>
   html = html.replace(/<lj\s+url="([^"]+)"\s*>([\s\S]*?)<\/lj>/g,
     (_, url, content) => `<a href="${url}">${content}</a>`);
 
-  // 用户提及标签 <tj>user_id</tj>
   html = html.replace(/<tj>([\s\S]*?)<\/tj>/g,
     (_, uid) => `<a href="tg://user?id=${uid}">${uid}</a>`);
 
-  // ★ Premium emoji 标签 <em id="数字ID">fallback文字</em>
   html = html.replace(/<em\s+id="(\d+)"\s*>([\s\S]*?)<\/em>/g,
     (_, id, fallback) => `<tg-emoji emoji-id="${id}">${fallback}</tg-emoji>`);
 
-  // 基础标签映射表
   const tagPairs = [
     ['<yy>',   '</yy>',   '<blockquote>',          '</blockquote>'],
     ['<yyzd>', '</yyzd>', '<blockquote expandable>', '</blockquote>'],
@@ -68,7 +57,6 @@ function convertTagsToHTML(text) {
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
-
 
 // ==================== 配置获取 ====================
 
@@ -121,28 +109,21 @@ function getConfig(env) {
   };
 }
 
+// ==================== 回复匹配（优先级 + 随机数表去重） ====================
 
-// ==================== 回复匹配（支持优先级） ====================
-
-/**
- * 返回 { text, buttons, media }
- * 多条规则命中时，取 priority 最高的（默认 0）
- */
-function getReplyData(text, config) {
+function getReplyData(text, config, uid) {
   const lowerText = (text || "").toLowerCase();
   let bestMatch = null;
   let bestPriority = -Infinity;
 
   for (const rule of config.rules || []) {
     let matched = false;
-
     for (const keyword of rule.keywords || []) {
       if (lowerText.includes(keyword.toLowerCase())) {
         matched = true;
         break;
       }
     }
-
     if (matched) {
       const priority = typeof rule.priority === 'number' ? rule.priority : 0;
       if (priority > bestPriority) {
@@ -160,11 +141,22 @@ function getReplyData(text, config) {
     };
   }
 
-  // 默认回复
+  // 默认回复：随机数表，一轮内不重复
   const replies = config.default_reply;
   let replyText = '';
+
   if (Array.isArray(replies) && replies.length > 0) {
-    replyText = replies[Math.floor(Math.random() * replies.length)];
+    if (replies.length === 1) {
+      replyText = replies[0];
+    } else {
+      let entry = shuffleMap.get(uid);
+      if (!entry || entry.pointer >= entry.table.length) {
+        entry = { table: shuffle(replies), pointer: 0 };
+      }
+      replyText = entry.table[entry.pointer];
+      entry.pointer++;
+      shuffleMap.set(uid, entry);
+    }
   } else if (typeof replies === 'string') {
     replyText = replies;
   }
@@ -175,7 +167,6 @@ function getReplyData(text, config) {
     media: null,
   };
 }
-
 
 // ==================== 工具函数 ====================
 
@@ -192,13 +183,10 @@ function log(level, message, data = null) {
 function isAdminAuthorized(request, env) {
   const adminToken = env.ADMIN_TOKEN;
   if (!adminToken) return false;
-
   const authHeader = request.headers.get('Authorization') || '';
   if (authHeader === `Bearer ${adminToken}`) return true;
-
   const url = new URL(request.url);
   if (url.searchParams.get('token') === adminToken) return true;
-
   return false;
 }
 
@@ -209,9 +197,7 @@ function unauthorizedResponse() {
   });
 }
 
-/**
- * 获取消息的文字描述（用于日志和关键词匹配）
- */
+// 消息类型识别
 function getMessageText(msg) {
   if (!msg) return null;
   if (msg.text) return msg.text;
@@ -231,7 +217,6 @@ function getMessageText(msg) {
   return null;
 }
 
-
 // ==================== 主程序 ====================
 
 export default {
@@ -239,7 +224,7 @@ export default {
     const url  = new URL(request.url);
     const path = url.pathname;
 
-    // -------------------- 健康检查 --------------------
+    // 健康检查
     if (path === '/') {
       return new Response('TGDM Bot Worker is running', {
         status: 200,
@@ -247,7 +232,7 @@ export default {
       });
     }
 
-    // ==================== Webhook 端点 ====================
+    // ==================== Webhook ====================
     if (path === '/webhook') {
       if (request.method !== 'POST') {
         return new Response('Method not allowed', { status: 405 });
@@ -280,17 +265,19 @@ export default {
         const uid      = msg.from.id;
         const username = msg.from.username || msg.from.first_name || String(uid);
 
+        // 忽略管理员
         if (config.ignore_owner && uid === config.owner_id) {
           log('INFO', `Ignored owner: ${username} (${uid})`);
           return new Response('OK', { status: 200 });
         }
 
+        // 黑名单
         if (config.blacklist && config.blacklist.includes(uid)) {
           log('INFO', `Blocked user: ${username} (${uid})`);
           return new Response('OK', { status: 200 });
         }
 
-        // 冷却检查
+        // 冷却
         if (config.cooldown.enabled) {
           const now = Date.now();
           const last = cooldownMap.get(uid);
@@ -301,7 +288,7 @@ export default {
           cooldownMap.set(uid, now);
         }
 
-        const replyData = getReplyData(msgText, config);
+        const replyData = getReplyData(msgText, config, uid);
         if (!replyData.text && !replyData.media?.url) {
           log('WARN', `No reply generated for: ${msgText}`);
           return new Response('OK', { status: 200 });
@@ -313,7 +300,7 @@ export default {
           return new Response('Token missing', { status: 500 });
         }
 
-        // 发送"正在输入"状态
+        // 正在输入
         if (config.typing_enabled) {
           try {
             await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
@@ -340,23 +327,17 @@ export default {
           await sleep(Math.random() * (max - min) + min);
         }
 
-        // 根据 media 构建 payload 和 API 方法
+        // 构建 payload
         let apiMethod = 'sendMessage';
-        const payload = {
-          chat_id: msg.chat.id,
-        };
+        const payload = { chat_id: msg.chat.id };
 
         if (replyData.media && replyData.media.url) {
           const type = replyData.media.type || 'document';
           const methodMap = {
-            photo:     'sendPhoto',
-            video:     'sendVideo',
-            audio:     'sendAudio',
-            document:  'sendDocument',
-            animation: 'sendAnimation',
+            photo: 'sendPhoto', video: 'sendVideo', audio: 'sendAudio',
+            document: 'sendDocument', animation: 'sendAnimation',
           };
           apiMethod = methodMap[type] || 'sendDocument';
-
           payload[type] = replyData.media.url;
           if (replyData.text) {
             payload.caption = replyData.text;
@@ -367,11 +348,9 @@ export default {
           payload.parse_mode = 'HTML';
         }
 
-        // 附加按钮
-        if (replyData.buttons && Array.isArray(replyData.buttons) && replyData.buttons.length > 0) {
-          payload.reply_markup = {
-            inline_keyboard: replyData.buttons,
-          };
+        // 按钮
+        if (replyData.buttons && replyData.buttons.length) {
+          payload.reply_markup = { inline_keyboard: replyData.buttons };
         }
 
         // 引用回复
@@ -382,14 +361,11 @@ export default {
           payload.business_connection_id = msg.business_connection_id;
         }
 
-        const sendResp = await fetch(
-          `https://api.telegram.org/bot${token}/${apiMethod}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          }
-        );
+        const sendResp = await fetch(`https://api.telegram.org/bot${token}/${apiMethod}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
 
         const sendResult = await sendResp.json();
 
@@ -413,29 +389,17 @@ export default {
 
     if (path === '/setup') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-
       const token = env.TG_TOKEN;
-      if (!token) {
-        return new Response('Error: TG_TOKEN not set', { status: 500 });
-      }
-
+      if (!token) return new Response('Error: TG_TOKEN not set', { status: 500 });
       const webhookUrl = `${url.origin}/webhook`;
       const body = { url: webhookUrl };
-
-      if (env.WEBHOOK_SECRET) {
-        body.secret_token = env.WEBHOOK_SECRET;
-      }
-
-      const resp   = await fetch(
-        `https://api.telegram.org/bot${token}/setWebhook`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }
-      );
+      if (env.WEBHOOK_SECRET) body.secret_token = env.WEBHOOK_SECRET;
+      const resp = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       const result = await resp.json();
-
       return new Response(JSON.stringify(result, null, 2), {
         status: result.ok ? 200 : 400,
         headers: { 'Content-Type': 'application/json' },
@@ -444,13 +408,10 @@ export default {
 
     if (path === '/webhook-info') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-
       const token = env.TG_TOKEN;
       if (!token) return new Response('TG_TOKEN not set', { status: 500 });
-
-      const resp   = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+      const resp = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
       const result = await resp.json();
-
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -458,7 +419,6 @@ export default {
 
     if (path === '/config') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-
       const config = getConfig(env);
       const safeConfig = {
         enabled:             config.enabled,
@@ -472,7 +432,6 @@ export default {
         rules_count:         config.rules?.length || 0,
         blacklist_count:     config.blacklist?.length || 0,
       };
-
       return new Response(JSON.stringify(safeConfig, null, 2), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -480,13 +439,10 @@ export default {
 
     if (path === '/delete-webhook') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-
       const token = env.TG_TOKEN;
       if (!token) return new Response('TG_TOKEN not set', { status: 500 });
-
-      const resp   = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
+      const resp = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
       const result = await resp.json();
-
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'Content-Type': 'application/json' },
       });
