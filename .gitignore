@@ -25,4 +25,4 @@ Thumbs.db
 *.bak
 
 # git
-*.gitignore
+.gitignore
