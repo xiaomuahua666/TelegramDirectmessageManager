@@ -23,3 +23,6 @@ Thumbs.db
 
 # MT备份
 *.bak
+
+# git
+*.gitignore
