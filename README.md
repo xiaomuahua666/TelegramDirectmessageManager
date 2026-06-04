@@ -7,17 +7,19 @@ TGDM 是一个功能完备的 Telegram 私聊机器人，支持**自定义标签
 
 ## 部署方式
 
-TGDM 提供两种灵活的部署方案，以适应不同的使用场景和技术偏好：
+TGDM 提供三种灵活的部署方案，以适应不同的使用场景和技术偏好：
 
 *   **🐍 Python 版**：适用于拥有 VPS 或本地服务器的用户，提供更强的自定义能力和数据持久化。
-*   **☁️ Cloudflare Workers 版**：基于无服务器架构，利用 Cloudflare 的免费额度即可运行，部署简便，适合轻量级应用。
+*   **☁️ Cloudflare Workers 版（无 KV）**：基于无服务器架构，利用 Cloudflare 的免费额度即可运行，部署简便，适合轻量级应用。
+*   **💾 Cloudflare Workers 版（有 KV）**：在无 KV 版基础上增加**删除上一条回复**功能，适合需要保持聊天界面整洁的用户。
 
 ## 目录
 
 *   [功能特性](#-功能特性)
 *   [文件结构](#-文件结构)
 *   [Python 版部署](#-python-版部署)
-*   [Cloudflare Workers 版部署](#-cloudflare-workers-版部署)
+*   [Cloudflare Workers 版部署（无 KV）](#-cloudflare-workers-版部署无-kv)
+*   [Cloudflare Workers 版部署（有 KV）](#-cloudflare-workers-版部署有-kv)
 *   [自定义标签语法](#-自定义标签语法)
 *   [内联按钮](#-内联按钮)
 *   [媒体回复](#-媒体回复)
@@ -29,23 +31,24 @@ TGDM 提供两种灵活的部署方案，以适应不同的使用场景和技术
 
 以下表格详细对比了 Python 版和 Cloudflare Workers 版的功能支持情况：
 
-| 功能特性                   | Python 版 | Workers 版 | 备注                                   |
-| :------------------------- | :-------- | :--------- | :------------------------------------- |
-| 自动回复（关键词+默认）    | ✅        | ✅         |                                        |
-| 自定义标签转 HTML          | ✅        | ✅         |                                        |
-| 毫秒级延迟响应             | ✅        | ✅         |                                        |
-| 黑名单功能                 | ✅        | ✅         |                                        |
-| Business 账号支持          | ✅        | ✅         |                                        |
-| 内联按钮（URL）            | ❌        | ✅         |                                        |
-| 媒体回复（图片/视频/文件等）| ❌        | ✅         |                                        |
-| Premium Emoji 发送         | ❌        | ✅         | 通过 `<em>` 标签实现                  |
-| "正在输入"状态             | ❌        | ✅         | 可开关                                 |
-| 用户冷却时间               | ❌        | ✅         | 纯内存实现，重启重置                   |
-| 规则优先级                 | ❌        | ✅         | 多条规则同时命中时选最高优先级         |
-| 全消息类型响应             | ❌        | ✅         | 图片/贴纸/文件等非文本消息也会自动回复 |
-| 用户数据统计               | ✅        | ❌         |                                        |
-| 不重复随机回复             | ✅        | ❌         |                                        |
-| 配置热加载                 | ✅        | ⚠️         | Workers 版修改环境变量后需重新部署     |
+| 功能特性                   | Python 版 | Workers 版<br>(无 KV) | Workers 版<br>(有 KV) | 备注                                   |
+| :------------------------- | :-------- | :-------------------- | :-------------------- | :------------------------------------- |
+| 自动回复（关键词+默认）    | ✅        | ✅                    | ✅                    |                                        |
+| 自定义标签转 HTML          | ✅        | ✅                    | ✅                    |                                        |
+| 毫秒级延迟响应             | ✅        | ✅                    | ✅                    |                                        |
+| 黑名单功能                 | ✅        | ✅                    | ✅                    |                                        |
+| Business 账号支持          | ✅        | ✅                    | ✅                    |                                        |
+| 内联按钮（URL）            | ❌        | ✅                    | ✅                    |                                        |
+| 媒体回复（图片/视频/文件等）| ❌        | ✅                    | ✅                    |                                        |
+| Premium Emoji 发送         | ❌        | ✅                    | ✅                    | 通过 `<em>` 标签实现                  |
+| "正在输入"状态             | ❌        | ✅                    | ✅                    | 可开关                                 |
+| 用户冷却时间               | ❌        | ✅                    | ✅                    | 纯内存实现，重启重置                   |
+| 规则优先级                 | ❌        | ✅                    | ✅                    | 多条规则同时命中时选最高优先级         |
+| 全消息类型响应             | ❌        | ✅                    | ✅                    | 图片/贴纸/文件等非文本消息也会自动回复 |
+| **删除上一条回复**         | ❌        | ❌                    | ✅                    | 需要 KV 绑定，可保持聊天界面整洁       |
+| 用户数据统计               | ✅        | ❌                    | ❌                    |                                        |
+| 不重复随机回复             | ✅        | ❌                    | ❌                    |                                        |
+| 配置热加载                 | ✅        | ⚠️                    | ⚠️                    | Workers 版修改环境变量后需重新部署     |
 
 ## 📁 文件结构
 
@@ -55,7 +58,8 @@ tgdm/
 ├── config.json          # Python 版配置文件
 ├── token.txt            # Python 版 Bot Token
 ├── users.json           # Python 版用户数据（自动生成）
-├── worker.js            # Cloudflare Workers 版代码
+├── worker.js            # Cloudflare Workers 版代码（无 KV）
+├── worker-kv.js         # Cloudflare Workers 版代码（有 KV）
 ├── .gitignore           # Git 忽略文件
 ├── LICENSE              # MIT 许可证
 └── README.md            # 本文件
@@ -137,7 +141,9 @@ python main.py
 2.  **Business 账号**：默认使用 `business_message`。普通账号需将 `main.py` 中的 `allowed_updates` 改为 `["message"]`。
 3.  **热加载**：修改 `config.json` 后，下一条消息即可生效，无需重启机器人。
 
-## ☁️ Cloudflare Workers 版部署
+## ☁️ Cloudflare Workers 版部署（无 KV）
+
+这是基础版本，不需要绑定 KV，适合快速部署和使用。
 
 ### 1. 获取 Bot Token
 
@@ -262,6 +268,122 @@ https://你的worker域名/setup?token=你的ADMIN_TOKEN
 3.  **日志查看**：可在 Worker 的 **日志** 页面查看运行日志。
 4.  **冷却时间**：基于内存实现，Worker 实例重启后冷却记录会重置。
 
+## 💾 Cloudflare Workers 版部署（有 KV）
+
+增强版本，需要绑定 KV 命名空间，支持删除上一条机器人回复，保持聊天界面整洁。
+
+### 新增功能
+
+相比无 KV 版本，有 KV 版本额外支持：
+
+| 功能           | 说明                                     |
+| :------------- | :--------------------------------------- |
+| 删除上一条回复 | 每次回复前自动删除上一次的机器人回复，聊天窗口只保留最新一条 |
+| KV 持久化      | 使用 Cloudflare KV 存储消息记录，Worker 重启不会丢失数据 |
+
+### 新增环境变量
+
+| 变量名           | 类型   | 默认值 | 说明                                     |
+| :--------------- | :----- | :----- | :--------------------------------------- |
+| `KEEP_LAST_ONLY` | 纯文本 | `false`| 是否只保留最后一条机器人回复，设为 `true` 开启 |
+
+### 1. 创建 KV 命名空间
+
+1.  登录 [Cloudflare 仪表板](https://dash.cloudflare.com/)。
+2.  导航至 **Workers & Pages** → **KV**。
+3.  点击 **创建命名空间**，命名为 `tgdm`（或其他名称）。
+4.  记录下命名空间的 ID。
+
+### 2. 创建 Worker 并绑定 KV
+
+1.  进入 **Workers & Pages** → **创建 Worker**，命名为 `tgdm-bot-kv`。
+2.  进入 Worker 的 **设置** → **变量**。
+3.  在 **KV 命名空间绑定** 部分，点击 **添加绑定**：
+    *   **变量名**：`LAST_REPLY_KV`（必须完全一致）
+    *   **KV 命名空间**：选择您刚创建的 `tgdm` 命名空间。
+
+### 3. 粘贴代码
+
+将 `worker-kv.js` 文件中的代码复制并粘贴到 Cloudflare Worker 编辑器中，然后点击 **部署**。
+
+### 4. 配置环境变量
+
+在 **设置** → **变量** → **环境变量** 中添加以下变量：
+
+**密钥类型：**
+
+| 变量名           | 值           | 说明             |
+| :--------------- | :----------- | :--------------- |
+| `TG_TOKEN`       | 你的 Bot Token | 机器人 Token     |
+| `ADMIN_TOKEN`    | 自定义密钥     | 管理端点鉴权 Token |
+| `WEBHOOK_SECRET` | 自定义密钥     | Webhook 安全校验 Token |
+
+**纯文本类型：**
+
+| 变量名           | 值     | 默认值 | 说明                                     |
+| :--------------- | :----- | :----- | :--------------------------------------- |
+| `BOT_ENABLED`    | `true` | `true` | 机器人总开关                             |
+| `OWNER_ID`       | 你的 ID | `null` | 管理员 Telegram ID                       |
+| `IGNORE_OWNER`   | `true` | `true` | 是否忽略管理员消息                       |
+| `REPLY_MODE`     | `true` | `true` | 是否引用回复原消息                       |
+| `DELAY_ENABLED`  | `true` | `true` | 是否启用延迟回复                         |
+| `DELAY_MIN`      | `50`   | `50`   | 最小延迟时间（毫秒）                     |
+| `DELAY_MAX`      | `100`  | `100`  | 最大延迟时间（毫秒）                     |
+| `TYPING_ENABLED` | `true` | `false`| 是否发送"正在输入"状态                   |
+| `COOLDOWN_ENABLED`| `false`| `false`| 是否启用用户冷却                         |
+| `COOLDOWN_SECONDS`| `30`   | `30`   | 冷却秒数                                 |
+| `KEEP_LAST_ONLY` | `true` | `false`| 是否只保留最后一条回复（有 KV 版本核心功能） |
+
+**JSON 类型：**
+
+`DEFAULT_REPLY`、`RULES`、`BLACKLIST` 的配置格式与无 KV 版本完全相同。
+
+### 5. 设置 Webhook
+
+```
+https://你的worker域名/setup?token=你的ADMIN_TOKEN
+```
+
+### 6. 测试
+
+向您的 Bot 发送多条消息，观察机器人是否每次只保留最后一条回复。
+
+### 调试端点
+
+有 KV 版本额外提供以下调试接口：
+
+| 路径                                       | 功能                     | 示例                                     |
+| :----------------------------------------- | :----------------------- | :--------------------------------------- |
+| `/get-user-record?user_id=用户ID&token=ADMIN_TOKEN` | 查看某用户的最后一条消息记录 | 返回 `{ user_id, last_message_id, exists }` |
+| `/delete-message?chat_id=聊天ID&message_id=消息ID&token=ADMIN_TOKEN` | 手动删除指定消息         | 测试 Telegram API 删除功能               |
+
+### 工作原理
+
+有 KV 版本的工作流程如下：
+
+```
+用户发消息 → 查询 KV 中该用户的上一条机器人消息 ID → 调用 Telegram API 删除 → 发送新回复 → 将新消息 ID 保存到 KV
+```
+
+每个用户独立存储，互不干扰。KV 中的数据默认保留 48 小时（与 Telegram 删除消息的时间限制一致）。
+
+### KV 存储结构
+
+```json
+last_reply:{用户ID} → {
+  "message_id": 123456,
+  "chat_id": 789012,
+  "business_connection_id": "xxx"  // 仅 Business 账号有此字段
+}
+```
+
+### 注意事项
+
+1.  **KV 免费额度**：Cloudflare KV 每天提供 100 万次读取、100 万次写入的免费额度，对于个人使用完全足够。
+2.  **`KEEP_LAST_ONLY` 开关**：如果不需要删除功能，可将此变量设为 `false`，此时有 KV 版本的行为与无 KV 版本一致。
+3.  **Business 账号兼容**：有 KV 版本完美支持 Telegram Business 账号的 `deleteBusinessMessages` API。
+4.  **多用户隔离**：每个用户独立存储，互不干扰，不会出现删错消息的情况。
+
 ## 🏷️ 自定义标签语法
 
 TGDM 支持丰富的自定义标签，用于格式化机器人的回复消息，使其更具表现力。
@@ -277,7 +399,7 @@ TGDM 支持丰富的自定义标签，用于格式化机器人的回复消息，
 | `<xh>text</xh>`            | 下划线       | `<xh>重点标记</xh>`                     |
 | `<js>text</js>`            | 代码块       | `<js>def test():\n  return True</js>` |
 | `<jh>text</jh>`            | 剧透/模糊    | `<jh>猜猜是什么</jh>`                   |
-| `<lj url="URL">text</lj>`| 超链接       | `<lj url=\"https://example.com\">点击</lj>`|
+| `<lj url="URL">text</lj>`| 超链接       | `<lj url="https://example.com">点击</lj>`|
 | `<tj>user_id</tj>`        | 用户提及     | `<tj>123456789</tj>`                   |
 | `<em id="数字ID">fallback</em>`| Premium Emoji | `<em id="6323518884347381156">👋</em>`|
 | `</n>`                     | 换行         | `第一行</n>第二行`                       |
@@ -455,6 +577,25 @@ Workers 版已支持全消息类型响应（图片、贴纸、文件、语音等
 <summary><b>Q: Python 版和 Workers 版可以同时运行吗？</b></summary>
 
 **不可以**。同一个 Bot Token 只能绑定一个消息接收端点（要么通过轮询，要么通过 Webhook）。建议您根据实际需求选择一种部署方式。
+
+</details>
+
+<details>
+<summary><b>Q: 有 KV 版本和无 KV 版本可以切换吗？</b></summary>
+
+可以。两个版本的代码是不同的文件，但环境变量基本通用。切换时只需：
+
+1.  在 Worker 编辑器中替换代码（`worker.js` ↔ `worker-kv.js`）。
+2.  如为 KV 版本，需确保已绑定 `LAST_REPLY_KV` 命名空间。
+3.  设置 `KEEP_LAST_ONLY` 环境变量。
+4.  重新部署并设置 Webhook。
+
+</details>
+
+<details>
+<summary><b>Q: 有 KV 版本会消耗更多免费额度吗？</b></summary>
+
+有 KV 版本每次回复会增加一次 KV 读取和一次 KV 写入操作。Cloudflare KV 每天提供 10 万次读取和 1000 次写入的免费额度，对于个人使用完全足够。
 
 </details>
 
