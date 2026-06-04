@@ -1,11 +1,14 @@
 // ==================== Telegram DM Bot for Cloudflare Workers ====================
-// 环境变量新增（可选）：
-// KEEP_LAST_ONLY = true   # 是否只保留最后一条机器人回复，默认 false
-// 需要绑定 KV Namespace，变量名: LAST_REPLY_KV
+// TG_TOKEN / ADMIN_TOKEN / WEBHOOK_SECRET / BOT_ENABLED / OWNER_ID
+// IGNORE_OWNER / REPLY_MODE / DELAY_ENABLED / DELAY_MIN / DELAY_MAX
+// TYPING_ENABLED / COOLDOWN_ENABLED / COOLDOWN_SECONDS
+// DEFAULT_REPLY / RULES / BLACKLIST
+// KEEP_LAST_ONLY
+// KV binding: LAST_REPLY_KV
 // ==================== 代码开始 ====================
 
 const cooldownMap = new Map();
-const shuffleMap = new Map();
+const shuffleMap  = new Map();
 
 // Fisher-Yates 洗牌
 function shuffle(arr) {
@@ -34,15 +37,15 @@ function convertTagsToHTML(text) {
     (_, id, fallback) => `<tg-emoji emoji-id="${id}">${fallback}</tg-emoji>`);
 
   const tagPairs = [
-    ['<yy>',   '</yy>',   '<blockquote>',          '</blockquote>'],
+    ['<yy>',   '</yy>',   '<blockquote>',           '</blockquote>'],
     ['<yyzd>', '</yyzd>', '<blockquote expandable>', '</blockquote>'],
-    ['<dk>',   '</dk>',   '<code>',                '</code>'],
-    ['<jd>',   '</jd>',   '<b>',                   '</b>'],
-    ['<xt>',   '</xt>',   '<i>',                   '</i>'],
-    ['<sc>',   '</sc>',   '<s>',                   '</s>'],
-    ['<xh>',   '</xh>',   '<u>',                   '</u>'],
-    ['<js>',   '</js>',   '<pre>',                 '</pre>'],
-    ['<jh>',   '</jh>',   '<tg-spoiler>',          '</tg-spoiler>'],
+    ['<dk>',   '</dk>',   '<code>',                 '</code>'],
+    ['<jd>',   '</jd>',   '<b>',                    '</b>'],
+    ['<xt>',   '</xt>',   '<i>',                    '</i>'],
+    ['<sc>',   '</sc>',   '<s>',                    '</s>'],
+    ['<xh>',   '</xh>',   '<u>',                    '</u>'],
+    ['<js>',   '</js>',   '<pre>',                  '</pre>'],
+    ['<jh>',   '</jh>',   '<tg-spoiler>',           '</tg-spoiler>'],
   ];
 
   for (const [open, close, htmlOpen, htmlClose] of tagPairs) {
@@ -84,15 +87,15 @@ function getConfig(env) {
   }
 
   return {
-    enabled:       parseBoolean(env.BOT_ENABLED, true),
-    owner_id:      parseIntValue(env.OWNER_ID, null),
-    ignore_owner:  parseBoolean(env.IGNORE_OWNER, true),
-    reply_mode:    parseBoolean(env.REPLY_MODE, true),
+    enabled:        parseBoolean(env.BOT_ENABLED, true),
+    owner_id:       parseIntValue(env.OWNER_ID, null),
+    ignore_owner:   parseBoolean(env.IGNORE_OWNER, true),
+    reply_mode:     parseBoolean(env.REPLY_MODE, true),
     typing_enabled: parseBoolean(env.TYPING_ENABLED, false),
     keep_last_only: parseBoolean(env.KEEP_LAST_ONLY, false),
     cooldown: {
-      enabled:  parseBoolean(env.COOLDOWN_ENABLED, false),
-      seconds:  parseIntValue(env.COOLDOWN_SECONDS, 30),
+      enabled: parseBoolean(env.COOLDOWN_ENABLED, false),
+      seconds: parseIntValue(env.COOLDOWN_SECONDS, 30),
     },
     delay: {
       enabled: parseBoolean(env.DELAY_ENABLED, true),
@@ -109,78 +112,11 @@ function getConfig(env) {
   };
 }
 
-// ==================== KV 操作 ====================
-
-async function getLastBotMessageId(kv, userId, chatId) {
-  if (!kv) return null;
-  const key = `bot_msg:${userId}:${chatId}`;
-  const value = await kv.get(key);
-  return value ? parseInt(value, 10) : null;
-}
-
-async function saveLastBotMessageId(kv, userId, chatId, messageId) {
-  if (!kv) return;
-  const key = `bot_msg:${userId}:${chatId}`;
-  await kv.put(key, String(messageId), { expirationTtl: 86400 * 7 });
-  console.log(`[KV] Saved: ${key} -> ${messageId}`);
-}
-
-// 修复版：支持商业账号删除消息
-async function deletePreviousBotMessage(kv, token, userId, chatId, businessConnectionId) {
-  if (!kv) return false;
-  const lastMsgId = await getLastBotMessageId(kv, userId, chatId);
-  if (!lastMsgId) {
-    console.log(`[KV] No previous message for user ${userId}`);
-    return false;
-  }
-
-  try {
-    let url, payload;
-    
-    // 关键修复：根据是否是商业消息使用不同的 API
-    if (businessConnectionId) {
-      // 商业账号：使用 deleteBusinessMessages
-      url = `https://api.telegram.org/bot${token}/deleteBusinessMessages`;
-      payload = {
-        business_connection_id: businessConnectionId,
-        message_ids: [lastMsgId]  // 注意是数组
-      };
-      console.log(`[KV] Using deleteBusinessMessages for business account, message ${lastMsgId}`);
-    } else {
-      // 普通账号：使用 deleteMessage
-      url = `https://api.telegram.org/bot${token}/deleteMessage`;
-      payload = {
-        chat_id: chatId,
-        message_id: lastMsgId
-      };
-      console.log(`[KV] Using deleteMessage for normal chat, message ${lastMsgId}`);
-    }
-
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const result = await resp.json();
-    
-    if (result.ok) {
-      console.log(`[KV] Deleted previous bot message ${lastMsgId} for user ${userId}`);
-      return true;
-    } else {
-      console.log(`[KV] Delete failed: ${JSON.stringify(result)}`);
-      return false;
-    }
-  } catch (e) {
-    console.log(`[KV] Delete error: ${e.message}`);
-    return false;
-  }
-}
-
-// ==================== 回复匹配 ====================
+// ==================== 回复匹配（优先级 + 随机数表去重） ====================
 
 function getReplyData(text, config, uid) {
-  const lowerText = (text || "").toLowerCase();
-  let bestMatch = null;
+  const lowerText  = (text || "").toLowerCase();
+  let bestMatch    = null;
   let bestPriority = -Infinity;
 
   for (const rule of config.rules || []) {
@@ -195,21 +131,21 @@ function getReplyData(text, config, uid) {
       const priority = typeof rule.priority === 'number' ? rule.priority : 0;
       if (priority > bestPriority) {
         bestPriority = priority;
-        bestMatch = rule;
+        bestMatch    = rule;
       }
     }
   }
 
   if (bestMatch) {
     return {
-      text: convertTagsToHTML(bestMatch.reply),
+      text:    convertTagsToHTML(bestMatch.reply),
       buttons: bestMatch.buttons || null,
-      media: bestMatch.media || null,
+      media:   bestMatch.media   || null,
     };
   }
 
   const replies = config.default_reply;
-  let replyText = '';
+  let replyText  = '';
 
   if (Array.isArray(replies) && replies.length > 0) {
     if (replies.length === 1) {
@@ -219,7 +155,7 @@ function getReplyData(text, config, uid) {
       if (!entry || entry.pointer >= entry.table.length) {
         entry = { table: shuffle(replies), pointer: 0 };
       }
-      replyText = entry.table[entry.pointer];
+      replyText     = entry.table[entry.pointer];
       entry.pointer++;
       shuffleMap.set(uid, entry);
     }
@@ -228,9 +164,9 @@ function getReplyData(text, config, uid) {
   }
 
   return {
-    text: convertTagsToHTML(replyText),
+    text:    convertTagsToHTML(replyText),
     buttons: null,
-    media: null,
+    media:   null,
   };
 }
 
@@ -241,7 +177,7 @@ function sleep(ms) {
 }
 
 function log(level, message, data = null) {
-  const ts = new Date().toISOString();
+  const ts   = new Date().toISOString();
   const line = `[${ts}] [${level}] ${message}`;
   data ? console.log(line, data) : console.log(line);
 }
@@ -258,28 +194,112 @@ function isAdminAuthorized(request, env) {
 
 function unauthorizedResponse() {
   return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-    status: 403,
+    status:  403,
     headers: { 'Content-Type': 'application/json' },
   });
 }
 
 function getMessageText(msg) {
   if (!msg) return null;
-  if (msg.text) return msg.text;
-  if (msg.caption) return msg.caption;
-  if (msg.photo) return '[图片]';
-  if (msg.video) return '[视频]';
-  if (msg.sticker) return '[贴纸]';
-  if (msg.document) return '[文件]';
-  if (msg.audio) return '[音频]';
-  if (msg.voice) return '[语音]';
-  if (msg.animation) return '[GIF]';
+  if (msg.text)       return msg.text;
+  if (msg.caption)    return msg.caption;
+  if (msg.photo)      return '[图片]';
+  if (msg.video)      return '[视频]';
+  if (msg.sticker)    return '[贴纸]';
+  if (msg.document)   return '[文件]';
+  if (msg.audio)      return '[音频]';
+  if (msg.voice)      return '[语音]';
+  if (msg.animation)  return '[GIF]';
   if (msg.video_note) return '[视频消息]';
-  if (msg.contact) return '[联系人]';
-  if (msg.location) return '[位置]';
-  if (msg.poll) return '[投票]';
-  if (msg.dice) return '[骰子]';
+  if (msg.contact)    return '[联系人]';
+  if (msg.location)   return '[位置]';
+  if (msg.poll)       return '[投票]';
+  if (msg.dice)       return '[骰子]';
   return null;
+}
+
+// ==================== KV 操作 ====================
+// 存储结构：{ message_id, chat_id, business_connection_id }
+
+const KV_TTL_SECONDS = 48 * 60 * 60; // 48小时，与 Telegram 删消息限制一致
+
+async function kvGetLastReply(kv, uid) {
+  if (!kv) return null;
+  try {
+    const val = await kv.get(`last_reply:${uid}`);
+    if (!val) return null;
+    return JSON.parse(val);
+  } catch (e) {
+    log('WARN', 'KV get failed', e.message);
+    return null;
+  }
+}
+
+async function kvSetLastReply(kv, uid, data) {
+  if (!kv) return;
+  try {
+    await kv.put(
+      `last_reply:${uid}`,
+      JSON.stringify(data),
+      { expirationTtl: KV_TTL_SECONDS }
+    );
+  } catch (e) {
+    log('WARN', 'KV put failed', e.message);
+  }
+}
+
+async function kvDeleteLastReply(kv, uid) {
+  if (!kv) return;
+  try {
+    await kv.delete(`last_reply:${uid}`);
+  } catch (e) {
+    log('WARN', 'KV delete failed', e.message);
+  }
+}
+
+// ==================== 删除上一条自动回复 ====================
+
+async function deletePreviousReply(kv, uid, token) {
+  const prev = await kvGetLastReply(kv, uid);
+  if (!prev) return;
+
+  // 先清除 KV，无论删除是否成功都不重试
+  await kvDeleteLastReply(kv, uid);
+
+  try {
+    let apiMethod, body;
+
+    if (prev.business_connection_id) {
+      // Business 模式：必须用 deleteBusinessMessages
+      apiMethod = 'deleteBusinessMessages';
+      body = {
+        business_connection_id: prev.business_connection_id,
+        message_ids: [prev.message_id],
+      };
+    } else {
+      // 普通模式：用 deleteMessage
+      apiMethod = 'deleteMessage';
+      body = {
+        chat_id:    prev.chat_id,
+        message_id: prev.message_id,
+      };
+    }
+
+    const resp = await fetch(`https://api.telegram.org/bot${token}/${apiMethod}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    const result = await resp.json();
+
+    if (!result.ok) {
+      log('WARN', `${apiMethod} failed (msg ${prev.message_id})`, result.description);
+    } else {
+      log('INFO', `Deleted previous auto-reply msg_id ${prev.message_id} via ${apiMethod}`);
+    }
+  } catch (e) {
+    log('WARN', 'deletePreviousReply error', e.message);
+  }
 }
 
 // ==================== 主程序 ====================
@@ -291,7 +311,7 @@ export default {
 
     if (path === '/') {
       return new Response('TGDM Bot Worker is running', {
-        status: 200,
+        status:  200,
         headers: { 'Content-Type': 'text/plain' },
       });
     }
@@ -312,8 +332,8 @@ export default {
       }
 
       try {
-        const update = await request.json();
-        const msg = update.message || update.business_message;
+        const update  = await request.json();
+        const msg     = update.message || update.business_message;
         const msgText = getMessageText(msg);
 
         if (!msg || !msgText) {
@@ -321,7 +341,6 @@ export default {
         }
 
         const config = getConfig(env);
-        const kv = env.LAST_REPLY_KV;
 
         if (!config.enabled) {
           return new Response('OK', { status: 200 });
@@ -329,8 +348,7 @@ export default {
 
         const uid      = msg.from.id;
         const username = msg.from.username || msg.from.first_name || String(uid);
-        const chatId   = msg.chat.id;
-        const businessConnectionId = msg.business_connection_id;
+        const kv       = env.LAST_REPLY_KV || null;
 
         if (config.ignore_owner && uid === config.owner_id) {
           log('INFO', `Ignored owner: ${username} (${uid})`);
@@ -343,7 +361,7 @@ export default {
         }
 
         if (config.cooldown.enabled) {
-          const now = Date.now();
+          const now  = Date.now();
           const last = cooldownMap.get(uid);
           if (last && (now - last) < config.cooldown.seconds * 1000) {
             log('INFO', `Cooldown: ignored ${username} (${uid})`);
@@ -364,24 +382,30 @@ export default {
           return new Response('Token missing', { status: 500 });
         }
 
-        // 删除上一条回复（自动识别商业/普通账号）
-        if (config.keep_last_only && kv) {
-          await deletePreviousBotMessage(kv, token, uid, chatId, businessConnectionId);
+        // 删除上一条自动回复（keep_last_only 开启时）
+        if (config.keep_last_only) {
+          if (!kv) {
+            log('WARN', 'KEEP_LAST_ONLY is enabled but LAST_REPLY_KV is not bound, skipping delete');
+          } else {
+            await deletePreviousReply(kv, uid, token);
+          }
         }
 
-        // 正在输入
         if (config.typing_enabled) {
           try {
             await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
-              method: 'POST',
+              method:  'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                chat_id: chatId,
-                action: replyData.media?.type === 'video' ? 'upload_video' :
-                        replyData.media?.type === 'photo' ? 'upload_photo' :
-                        replyData.media?.type === 'audio' ? 'upload_audio' :
-                        replyData.media?.type === 'document' ? 'upload_document' : 'typing',
-                ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
+              body:    JSON.stringify({
+                chat_id: msg.chat.id,
+                action:
+                  replyData.media?.type === 'video'    ? 'upload_video'    :
+                  replyData.media?.type === 'photo'    ? 'upload_photo'    :
+                  replyData.media?.type === 'audio'    ? 'upload_audio'    :
+                  replyData.media?.type === 'document' ? 'upload_document' : 'typing',
+                ...(msg.business_connection_id
+                  ? { business_connection_id: msg.business_connection_id }
+                  : {}),
               }),
             });
           } catch (e) {
@@ -396,22 +420,25 @@ export default {
         }
 
         let apiMethod = 'sendMessage';
-        const payload = { chat_id: chatId };
+        const payload = { chat_id: msg.chat.id };
 
         if (replyData.media && replyData.media.url) {
-          const type = replyData.media.type || 'document';
+          const type      = replyData.media.type || 'document';
           const methodMap = {
-            photo: 'sendPhoto', video: 'sendVideo', audio: 'sendAudio',
-            document: 'sendDocument', animation: 'sendAnimation',
+            photo:     'sendPhoto',
+            video:     'sendVideo',
+            audio:     'sendAudio',
+            document:  'sendDocument',
+            animation: 'sendAnimation',
           };
-          apiMethod = methodMap[type] || 'sendDocument';
+          apiMethod     = methodMap[type] || 'sendDocument';
           payload[type] = replyData.media.url;
           if (replyData.text) {
-            payload.caption = replyData.text;
+            payload.caption    = replyData.text;
             payload.parse_mode = 'HTML';
           }
         } else {
-          payload.text = replyData.text;
+          payload.text       = replyData.text;
           payload.parse_mode = 'HTML';
         }
 
@@ -422,27 +449,38 @@ export default {
         if (config.reply_mode) {
           payload.reply_parameters = { message_id: msg.message_id };
         }
-        if (businessConnectionId) {
-          payload.business_connection_id = businessConnectionId;
+        if (msg.business_connection_id) {
+          payload.business_connection_id = msg.business_connection_id;
         }
 
-        const sendResp = await fetch(`https://api.telegram.org/bot${token}/${apiMethod}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-
+        const sendResp   = await fetch(
+          `https://api.telegram.org/bot${token}/${apiMethod}`,
+          {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(payload),
+          }
+        );
         const sendResult = await sendResp.json();
 
         if (!sendResult.ok) {
           log('ERROR', 'Send failed', { method: apiMethod, result: sendResult });
         } else {
-          if (config.keep_last_only && kv && sendResult.result && sendResult.result.message_id) {
-            await saveLastBotMessageId(kv, uid, chatId, sendResult.result.message_id);
+          // 写入 KV：同时保存 message_id、chat_id、business_connection_id
+          if (config.keep_last_only && kv && sendResult.result?.message_id) {
+            await kvSetLastReply(kv, uid, {
+              message_id:             sendResult.result.message_id,
+              chat_id:                msg.chat.id,
+              business_connection_id: msg.business_connection_id || null,
+            });
+            log('INFO', `KV saved msg_id ${sendResult.result.message_id} for uid ${uid} (biz: ${msg.business_connection_id || 'none'})`);
           }
-          
-          const shortIn  = msgText.length > 50 ? msgText.slice(0, 50) + '...' : msgText;
-          const shortOut = replyData.text ? (replyData.text.length > 50 ? replyData.text.slice(0, 50) + '...' : replyData.text) : '[media]';
+
+          const shortIn  = msgText.length > 50
+            ? msgText.slice(0, 50) + '...' : msgText;
+          const shortOut = replyData.text
+            ? (replyData.text.length > 50 ? replyData.text.slice(0, 50) + '...' : replyData.text)
+            : '[media]';
           log('INFO', `[${username} (${uid})] ${shortIn} -> ${shortOut} (${apiMethod})`);
         }
 
@@ -464,13 +502,13 @@ export default {
       const body = { url: webhookUrl };
       if (env.WEBHOOK_SECRET) body.secret_token = env.WEBHOOK_SECRET;
       const resp = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body:    JSON.stringify(body),
       });
       const result = await resp.json();
       return new Response(JSON.stringify(result, null, 2), {
-        status: result.ok ? 200 : 400,
+        status:  result.ok ? 200 : 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -479,7 +517,7 @@ export default {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
       const token = env.TG_TOKEN;
       if (!token) return new Response('TG_TOKEN not set', { status: 500 });
-      const resp = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+      const resp   = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
       const result = await resp.json();
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'Content-Type': 'application/json' },
@@ -488,7 +526,7 @@ export default {
 
     if (path === '/config') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-      const config = getConfig(env);
+      const config     = getConfig(env);
       const safeConfig = {
         enabled:             config.enabled,
         owner_id:            config.owner_id,
@@ -500,7 +538,7 @@ export default {
         cooldown:            config.cooldown,
         delay:               config.delay,
         default_reply_count: Array.isArray(config.default_reply) ? config.default_reply.length : 1,
-        rules_count:         config.rules?.length || 0,
+        rules_count:         config.rules?.length    || 0,
         blacklist_count:     config.blacklist?.length || 0,
       };
       return new Response(JSON.stringify(safeConfig, null, 2), {
@@ -512,64 +550,61 @@ export default {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
       const token = env.TG_TOKEN;
       if (!token) return new Response('TG_TOKEN not set', { status: 500 });
-      const resp = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
+      const resp   = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
       const result = await resp.json();
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    // 测试接口：查看某用户的最后一条消息记录
-    if (path === '/get-user-record') {
-      if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-      const kv = env.LAST_REPLY_KV;
-      if (!kv) return new Response(JSON.stringify({ error: 'LAST_REPLY_KV not bound' }), { status: 500 });
-      
-      const userId = url.searchParams.get('user_id');
-      const chatId = url.searchParams.get('chat_id') || userId;
-      if (!userId) {
-        return new Response(JSON.stringify({ error: 'Missing user_id parameter' }), { status: 400 });
-      }
-      
-      const key = `bot_msg:${userId}:${chatId}`;
-      const value = await kv.get(key);
-      
-      return new Response(JSON.stringify({ 
-        user_id: userId,
-        chat_id: chatId,
-        last_message_id: value ? parseInt(value, 10) : null,
-        exists: !!value
-      }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // 测试接口：手动删除某条消息
     if (path === '/delete-message') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-      const token = env.TG_TOKEN;
-      if (!token) return new Response(JSON.stringify({ error: 'TG_TOKEN not set' }), { status: 500 });
-      
-      const chatId = url.searchParams.get('chat_id');
-      const messageId = url.searchParams.get('message_id');
-      const businessConnectionId = url.searchParams.get('business_connection_id');
-      
-      if (!chatId || !messageId) {
-        return new Response(JSON.stringify({ error: 'Missing chat_id or message_id' }), { status: 400 });
+
+      const chat_id               = url.searchParams.get('chat_id');
+      const message_id            = url.searchParams.get('message_id');
+      const business_connection_id = url.searchParams.get('business_connection_id');
+
+      if (!message_id) {
+        return new Response(JSON.stringify({ error: 'Missing message_id' }), {
+          status:  400,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
-      
-      const payload = { chat_id: chatId, message_id: parseInt(messageId, 10) };
-      if (businessConnectionId) payload.business_connection_id = businessConnectionId;
-      
-      const resp = await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
-        method: 'POST',
+
+      const token = env.TG_TOKEN;
+      if (!token) return new Response('TG_TOKEN not set', { status: 500 });
+
+      let apiMethod, body;
+
+      if (business_connection_id) {
+        apiMethod = 'deleteBusinessMessages';
+        body = {
+          business_connection_id,
+          message_ids: [parseInt(message_id, 10)],
+        };
+      } else {
+        if (!chat_id) {
+          return new Response(JSON.stringify({ error: 'Missing chat_id (required when no business_connection_id)' }), {
+            status:  400,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        apiMethod = 'deleteMessage';
+        body = {
+          chat_id:    parseInt(chat_id,    10),
+          message_id: parseInt(message_id, 10),
+        };
+      }
+
+      const resp = await fetch(`https://api.telegram.org/bot${token}/${apiMethod}`, {
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body:    JSON.stringify(body),
       });
       const result = await resp.json();
-      
+
       return new Response(JSON.stringify(result, null, 2), {
-        status: result.ok ? 200 : 400,
+        status:  result.ok ? 200 : 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
