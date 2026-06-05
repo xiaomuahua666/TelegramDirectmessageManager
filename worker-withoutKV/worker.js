@@ -5,10 +5,21 @@
 // DEFAULT_REPLY / RULES / BLACKLIST
 // ==================== 代码开始 ====================
 
+// 远端增量配置直链（写死在代码中）
+const REMOTE_DEFAULT_REPLY_URL = 'https://pan.mahua.uk/f/kEqiB/default_reply.json';
+const REMOTE_RULES_URL         = 'https://pan.mahua.uk/f/jrJhV/rules.json';
+const REMOTE_BLACKLIST_URL     = 'https://pan.mahua.uk/f/yZlsr/blacklist.json';
+const REMOTE_CACHE_TTL         = 10 * 1000;
+
+const remoteCache = {
+  default_reply: { data: null, time: 0 },
+  rules:         { data: null, time: 0 },
+  blacklist:     { data: null, time: 0 },
+};
+
 const cooldownMap = new Map();
 const shuffleMap = new Map();
 
-// Fisher-Yates 洗牌
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -16,6 +27,26 @@ function shuffle(arr) {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+// ==================== 远端配置拉取 ====================
+
+async function fetchRemoteJSON(url, cacheEntry) {
+  const now = Date.now();
+  if (cacheEntry.data && (now - cacheEntry.time) < REMOTE_CACHE_TTL) {
+    return cacheEntry.data;
+  }
+  try {
+    const resp = await fetch(url, { cf: { cacheTtl: 60 } });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    cacheEntry.data = data;
+    cacheEntry.time = now;
+    return data;
+  } catch (e) {
+    log('WARN', `Remote fetch failed: ${url}`, e.message);
+    return cacheEntry.data;
+  }
 }
 
 // ==================== 标签转换 ====================
@@ -60,7 +91,7 @@ function escapeRegex(str) {
 
 // ==================== 配置获取 ====================
 
-function getConfig(env) {
+function getConfig(env, remote) {
   function parseJsonVariable(value, defaultValue) {
     if (value === undefined || value === null) return defaultValue;
     if (typeof value === 'object') return value;
@@ -84,6 +115,26 @@ function getConfig(env) {
     return isNaN(num) ? defaultValue : num;
   }
 
+  let default_reply = parseJsonVariable(env.DEFAULT_REPLY, [
+    "[AutoReply] 你好，有什么可以帮助你的吗？",
+    "[AutoReply] 请稍等，我会尽快回复你的。",
+    "[AutoReply] 收到你的消息了，请等待主人回复。",
+  ]);
+  let rules     = parseJsonVariable(env.RULES, []);
+  let blacklist = parseJsonVariable(env.BLACKLIST, []);
+
+  if (remote) {
+    if (Array.isArray(remote.default_reply)) {
+      default_reply = [...default_reply, ...remote.default_reply];
+    }
+    if (Array.isArray(remote.rules)) {
+      rules = [...rules, ...remote.rules];
+    }
+    if (Array.isArray(remote.blacklist)) {
+      blacklist = [...blacklist, ...remote.blacklist];
+    }
+  }
+
   return {
     enabled:       parseBoolean(env.BOT_ENABLED, true),
     owner_id:      parseIntValue(env.OWNER_ID, null),
@@ -99,13 +150,9 @@ function getConfig(env) {
       min:     parseIntValue(env.DELAY_MIN, 50),
       max:     parseIntValue(env.DELAY_MAX, 100),
     },
-    default_reply: parseJsonVariable(env.DEFAULT_REPLY, [
-      "[AutoReply] 你好，有什么可以帮助你的吗？",
-      "[AutoReply] 请稍等，我会尽快回复你的。",
-      "[AutoReply] 收到你的消息了，请等待主人回复。",
-    ]),
-    rules:     parseJsonVariable(env.RULES, []),
-    blacklist: parseJsonVariable(env.BLACKLIST, []),
+    default_reply,
+    rules,
+    blacklist,
   };
 }
 
@@ -141,7 +188,6 @@ function getReplyData(text, config, uid) {
     };
   }
 
-  // 默认回复：随机数表，一轮内不重复
   const replies = config.default_reply;
   let replyText = '';
 
@@ -197,7 +243,6 @@ function unauthorizedResponse() {
   });
 }
 
-// 消息类型识别
 function getMessageText(msg) {
   if (!msg) return null;
   if (msg.text) return msg.text;
@@ -224,7 +269,6 @@ export default {
     const url  = new URL(request.url);
     const path = url.pathname;
 
-    // 健康检查
     if (path === '/') {
       return new Response('TGDM Bot Worker is running', {
         status: 200,
@@ -242,7 +286,7 @@ export default {
       if (webhookSecret) {
         const incoming = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
         if (incoming !== webhookSecret) {
-          log('WARN', 'Webhook secret mismatch, request rejected');
+          log('WARN', 'Webhook secret mismatch');
           return new Response('Forbidden', { status: 403 });
         }
       }
@@ -252,32 +296,35 @@ export default {
         const msg = update.message || update.business_message;
         const msgText = getMessageText(msg);
 
-        if (!msg || !msgText) {
-          return new Response('OK', { status: 200 });
-        }
+        if (!msg || !msgText) return new Response('OK', { status: 200 });
 
-        const config = getConfig(env);
+        const [remoteDefaultReply, remoteRules, remoteBlacklist] = await Promise.all([
+          fetchRemoteJSON(REMOTE_DEFAULT_REPLY_URL, remoteCache.default_reply),
+          fetchRemoteJSON(REMOTE_RULES_URL,         remoteCache.rules),
+          fetchRemoteJSON(REMOTE_BLACKLIST_URL,     remoteCache.blacklist),
+        ]);
 
-        if (!config.enabled) {
-          return new Response('OK', { status: 200 });
-        }
+        const config = getConfig(env, {
+          default_reply: remoteDefaultReply,
+          rules:         remoteRules,
+          blacklist:     remoteBlacklist,
+        });
+
+        if (!config.enabled) return new Response('OK', { status: 200 });
 
         const uid      = msg.from.id;
         const username = msg.from.username || msg.from.first_name || String(uid);
 
-        // 忽略管理员
         if (config.ignore_owner && uid === config.owner_id) {
           log('INFO', `Ignored owner: ${username} (${uid})`);
           return new Response('OK', { status: 200 });
         }
 
-        // 黑名单
         if (config.blacklist && config.blacklist.includes(uid)) {
           log('INFO', `Blocked user: ${username} (${uid})`);
           return new Response('OK', { status: 200 });
         }
 
-        // 冷却
         if (config.cooldown.enabled) {
           const now = Date.now();
           const last = cooldownMap.get(uid);
@@ -300,7 +347,6 @@ export default {
           return new Response('Token missing', { status: 500 });
         }
 
-        // 正在输入
         if (config.typing_enabled) {
           try {
             await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
@@ -315,19 +361,15 @@ export default {
                 ...(msg.business_connection_id ? { business_connection_id: msg.business_connection_id } : {})
               }),
             });
-          } catch (e) {
-            log('WARN', 'sendChatAction failed', e.message);
-          }
+          } catch (e) { log('WARN', 'sendChatAction failed', e.message); }
         }
 
-        // 延迟
         if (config.delay?.enabled) {
           const min = config.delay.min || 50;
           const max = config.delay.max || 100;
           await sleep(Math.random() * (max - min) + min);
         }
 
-        // 构建 payload
         let apiMethod = 'sendMessage';
         const payload = { chat_id: msg.chat.id };
 
@@ -348,12 +390,10 @@ export default {
           payload.parse_mode = 'HTML';
         }
 
-        // 按钮
         if (replyData.buttons && replyData.buttons.length) {
           payload.reply_markup = { inline_keyboard: replyData.buttons };
         }
 
-        // 引用回复
         if (config.reply_mode) {
           payload.reply_parameters = { message_id: msg.message_id };
         }
@@ -419,7 +459,7 @@ export default {
 
     if (path === '/config') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-      const config = getConfig(env);
+      const config = getConfig(env, null);
       const safeConfig = {
         enabled:             config.enabled,
         owner_id:            config.owner_id,

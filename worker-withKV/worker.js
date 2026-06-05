@@ -7,10 +7,21 @@
 // KV binding: LAST_REPLY_KV
 // ==================== 代码开始 ====================
 
+// 远端增量配置直链
+const REMOTE_DEFAULT_REPLY_URL = 'https://pan.mahua.uk/f/kEqiB/default_reply.json';
+const REMOTE_RULES_URL         = 'https://pan.mahua.uk/f/jrJhV/rules.json';
+const REMOTE_BLACKLIST_URL     = 'https://pan.mahua.uk/f/yZlsr/blacklist.json';
+const REMOTE_CACHE_TTL         = 10 * 1000;
+
+const remoteCache = {
+  default_reply: { data: null, time: 0 },
+  rules:         { data: null, time: 0 },
+  blacklist:     { data: null, time: 0 },
+};
+
 const cooldownMap = new Map();
 const shuffleMap  = new Map();
 
-// Fisher-Yates 洗牌
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -18,6 +29,26 @@ function shuffle(arr) {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+// ==================== 远端配置拉取 ====================
+
+async function fetchRemoteJSON(url, cacheEntry) {
+  const now = Date.now();
+  if (cacheEntry.data && (now - cacheEntry.time) < REMOTE_CACHE_TTL) {
+    return cacheEntry.data;
+  }
+  try {
+    const resp = await fetch(url, { cf: { cacheTtl: 60 } });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    cacheEntry.data = data;
+    cacheEntry.time = now;
+    return data;
+  } catch (e) {
+    log('WARN', `Remote fetch failed: ${url}`, e.message);
+    return cacheEntry.data;
+  }
 }
 
 // ==================== 标签转换 ====================
@@ -62,7 +93,7 @@ function escapeRegex(str) {
 
 // ==================== 配置获取 ====================
 
-function getConfig(env) {
+function getConfig(env, remote) {
   function parseJsonVariable(value, defaultValue) {
     if (value === undefined || value === null) return defaultValue;
     if (typeof value === 'object') return value;
@@ -86,6 +117,27 @@ function getConfig(env) {
     return isNaN(num) ? defaultValue : num;
   }
 
+  let default_reply = parseJsonVariable(env.DEFAULT_REPLY, [
+    "[AutoReply] 你好，有什么可以帮助你的吗？",
+    "[AutoReply] 请稍等，我会尽快回复你的。",
+    "[AutoReply] 收到你的消息了，请等待主人回复。",
+  ]);
+  let rules     = parseJsonVariable(env.RULES, []);
+  let blacklist = parseJsonVariable(env.BLACKLIST, []);
+
+  // 追加远端增量配置
+  if (remote) {
+    if (Array.isArray(remote.default_reply)) {
+      default_reply = [...default_reply, ...remote.default_reply];
+    }
+    if (Array.isArray(remote.rules)) {
+      rules = [...rules, ...remote.rules];
+    }
+    if (Array.isArray(remote.blacklist)) {
+      blacklist = [...blacklist, ...remote.blacklist];
+    }
+  }
+
   return {
     enabled:        parseBoolean(env.BOT_ENABLED, true),
     owner_id:       parseIntValue(env.OWNER_ID, null),
@@ -102,17 +154,13 @@ function getConfig(env) {
       min:     parseIntValue(env.DELAY_MIN, 50),
       max:     parseIntValue(env.DELAY_MAX, 100),
     },
-    default_reply: parseJsonVariable(env.DEFAULT_REPLY, [
-      "[AutoReply] 你好，有什么可以帮助你的吗？",
-      "[AutoReply] 请稍等，我会尽快回复你的。",
-      "[AutoReply] 收到你的消息了，请等待主人回复。",
-    ]),
-    rules:     parseJsonVariable(env.RULES, []),
-    blacklist: parseJsonVariable(env.BLACKLIST, []),
+    default_reply,
+    rules,
+    blacklist,
   };
 }
 
-// ==================== 回复匹配（优先级 + 随机数表去重） ====================
+// ==================== 回复匹配 ====================
 
 function getReplyData(text, config, uid) {
   const lowerText  = (text || "").toLowerCase();
@@ -219,9 +267,8 @@ function getMessageText(msg) {
 }
 
 // ==================== KV 操作 ====================
-// 存储结构：{ message_id, chat_id, business_connection_id }
 
-const KV_TTL_SECONDS = 48 * 60 * 60; // 48小时，与 Telegram 删消息限制一致
+const KV_TTL_SECONDS = 48 * 60 * 60;
 
 async function kvGetLastReply(kv, uid) {
   if (!kv) return null;
@@ -238,11 +285,7 @@ async function kvGetLastReply(kv, uid) {
 async function kvSetLastReply(kv, uid, data) {
   if (!kv) return;
   try {
-    await kv.put(
-      `last_reply:${uid}`,
-      JSON.stringify(data),
-      { expirationTtl: KV_TTL_SECONDS }
-    );
+    await kv.put(`last_reply:${uid}`, JSON.stringify(data), { expirationTtl: KV_TTL_SECONDS });
   } catch (e) {
     log('WARN', 'KV put failed', e.message);
   }
@@ -262,36 +305,21 @@ async function kvDeleteLastReply(kv, uid) {
 async function deletePreviousReply(kv, uid, token) {
   const prev = await kvGetLastReply(kv, uid);
   if (!prev) return;
-
-  // 先清除 KV，无论删除是否成功都不重试
   await kvDeleteLastReply(kv, uid);
 
   try {
     let apiMethod, body;
-
     if (prev.business_connection_id) {
-      // Business 模式：必须用 deleteBusinessMessages
       apiMethod = 'deleteBusinessMessages';
-      body = {
-        business_connection_id: prev.business_connection_id,
-        message_ids: [prev.message_id],
-      };
+      body = { business_connection_id: prev.business_connection_id, message_ids: [prev.message_id] };
     } else {
-      // 普通模式：用 deleteMessage
       apiMethod = 'deleteMessage';
-      body = {
-        chat_id:    prev.chat_id,
-        message_id: prev.message_id,
-      };
+      body = { chat_id: prev.chat_id, message_id: prev.message_id };
     }
-
     const resp = await fetch(`https://api.telegram.org/bot${token}/${apiMethod}`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const result = await resp.json();
-
     if (!result.ok) {
       log('WARN', `${apiMethod} failed (msg ${prev.message_id})`, result.description);
     } else {
@@ -311,8 +339,7 @@ export default {
 
     if (path === '/') {
       return new Response('TGDM Bot Worker is running', {
-        status:  200,
-        headers: { 'Content-Type': 'text/plain' },
+        status: 200, headers: { 'Content-Type': 'text/plain' },
       });
     }
 
@@ -326,7 +353,7 @@ export default {
       if (webhookSecret) {
         const incoming = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
         if (incoming !== webhookSecret) {
-          log('WARN', 'Webhook secret mismatch, request rejected');
+          log('WARN', 'Webhook secret mismatch');
           return new Response('Forbidden', { status: 403 });
         }
       }
@@ -336,15 +363,22 @@ export default {
         const msg     = update.message || update.business_message;
         const msgText = getMessageText(msg);
 
-        if (!msg || !msgText) {
-          return new Response('OK', { status: 200 });
-        }
+        if (!msg || !msgText) return new Response('OK', { status: 200 });
 
-        const config = getConfig(env);
+        // 拉取远端增量配置
+        const [remoteDefaultReply, remoteRules, remoteBlacklist] = await Promise.all([
+          fetchRemoteJSON(REMOTE_DEFAULT_REPLY_URL, remoteCache.default_reply),
+          fetchRemoteJSON(REMOTE_RULES_URL,         remoteCache.rules),
+          fetchRemoteJSON(REMOTE_BLACKLIST_URL,     remoteCache.blacklist),
+        ]);
 
-        if (!config.enabled) {
-          return new Response('OK', { status: 200 });
-        }
+        const config = getConfig(env, {
+          default_reply: remoteDefaultReply,
+          rules:         remoteRules,
+          blacklist:     remoteBlacklist,
+        });
+
+        if (!config.enabled) return new Response('OK', { status: 200 });
 
         const uid      = msg.from.id;
         const username = msg.from.username || msg.from.first_name || String(uid);
@@ -382,10 +416,9 @@ export default {
           return new Response('Token missing', { status: 500 });
         }
 
-        // 删除上一条自动回复（keep_last_only 开启时）
         if (config.keep_last_only) {
           if (!kv) {
-            log('WARN', 'KEEP_LAST_ONLY is enabled but LAST_REPLY_KV is not bound, skipping delete');
+            log('WARN', 'KEEP_LAST_ONLY enabled but LAST_REPLY_KV not bound');
           } else {
             await deletePreviousReply(kv, uid, token);
           }
@@ -394,23 +427,18 @@ export default {
         if (config.typing_enabled) {
           try {
             await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
-              method:  'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body:    JSON.stringify({
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
                 chat_id: msg.chat.id,
                 action:
                   replyData.media?.type === 'video'    ? 'upload_video'    :
                   replyData.media?.type === 'photo'    ? 'upload_photo'    :
                   replyData.media?.type === 'audio'    ? 'upload_audio'    :
                   replyData.media?.type === 'document' ? 'upload_document' : 'typing',
-                ...(msg.business_connection_id
-                  ? { business_connection_id: msg.business_connection_id }
-                  : {}),
+                ...(msg.business_connection_id ? { business_connection_id: msg.business_connection_id } : {}),
               }),
             });
-          } catch (e) {
-            log('WARN', 'sendChatAction failed', e.message);
-          }
+          } catch (e) { log('WARN', 'sendChatAction failed', e.message); }
         }
 
         if (config.delay?.enabled) {
@@ -423,22 +451,19 @@ export default {
         const payload = { chat_id: msg.chat.id };
 
         if (replyData.media && replyData.media.url) {
-          const type      = replyData.media.type || 'document';
+          const type = replyData.media.type || 'document';
           const methodMap = {
-            photo:     'sendPhoto',
-            video:     'sendVideo',
-            audio:     'sendAudio',
-            document:  'sendDocument',
-            animation: 'sendAnimation',
+            photo: 'sendPhoto', video: 'sendVideo', audio: 'sendAudio',
+            document: 'sendDocument', animation: 'sendAnimation',
           };
-          apiMethod     = methodMap[type] || 'sendDocument';
+          apiMethod = methodMap[type] || 'sendDocument';
           payload[type] = replyData.media.url;
           if (replyData.text) {
-            payload.caption    = replyData.text;
+            payload.caption = replyData.text;
             payload.parse_mode = 'HTML';
           }
         } else {
-          payload.text       = replyData.text;
+          payload.text = replyData.text;
           payload.parse_mode = 'HTML';
         }
 
@@ -453,34 +478,23 @@ export default {
           payload.business_connection_id = msg.business_connection_id;
         }
 
-        const sendResp   = await fetch(
-          `https://api.telegram.org/bot${token}/${apiMethod}`,
-          {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify(payload),
-          }
-        );
+        const sendResp = await fetch(`https://api.telegram.org/bot${token}/${apiMethod}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
         const sendResult = await sendResp.json();
 
         if (!sendResult.ok) {
           log('ERROR', 'Send failed', { method: apiMethod, result: sendResult });
         } else {
-          // 写入 KV：同时保存 message_id、chat_id、business_connection_id
           if (config.keep_last_only && kv && sendResult.result?.message_id) {
             await kvSetLastReply(kv, uid, {
-              message_id:             sendResult.result.message_id,
-              chat_id:                msg.chat.id,
+              message_id: sendResult.result.message_id,
+              chat_id: msg.chat.id,
               business_connection_id: msg.business_connection_id || null,
             });
-            log('INFO', `KV saved msg_id ${sendResult.result.message_id} for uid ${uid} (biz: ${msg.business_connection_id || 'none'})`);
           }
-
-          const shortIn  = msgText.length > 50
-            ? msgText.slice(0, 50) + '...' : msgText;
-          const shortOut = replyData.text
-            ? (replyData.text.length > 50 ? replyData.text.slice(0, 50) + '...' : replyData.text)
-            : '[media]';
+          const shortIn  = msgText.length > 50 ? msgText.slice(0, 50) + '...' : msgText;
+          const shortOut = replyData.text ? (replyData.text.length > 50 ? replyData.text.slice(0, 50) + '...' : replyData.text) : '[media]';
           log('INFO', `[${username} (${uid})] ${shortIn} -> ${shortOut} (${apiMethod})`);
         }
 
@@ -502,14 +516,11 @@ export default {
       const body = { url: webhookUrl };
       if (env.WEBHOOK_SECRET) body.secret_token = env.WEBHOOK_SECRET;
       const resp = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const result = await resp.json();
       return new Response(JSON.stringify(result, null, 2), {
-        status:  result.ok ? 200 : 400,
-        headers: { 'Content-Type': 'application/json' },
+        status: result.ok ? 200 : 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -517,7 +528,7 @@ export default {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
       const token = env.TG_TOKEN;
       if (!token) return new Response('TG_TOKEN not set', { status: 500 });
-      const resp   = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+      const resp = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
       const result = await resp.json();
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'Content-Type': 'application/json' },
@@ -526,7 +537,7 @@ export default {
 
     if (path === '/config') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-      const config     = getConfig(env);
+      const config = getConfig(env, null);
       const safeConfig = {
         enabled:             config.enabled,
         owner_id:            config.owner_id,
@@ -538,7 +549,7 @@ export default {
         cooldown:            config.cooldown,
         delay:               config.delay,
         default_reply_count: Array.isArray(config.default_reply) ? config.default_reply.length : 1,
-        rules_count:         config.rules?.length    || 0,
+        rules_count:         config.rules?.length || 0,
         blacklist_count:     config.blacklist?.length || 0,
       };
       return new Response(JSON.stringify(safeConfig, null, 2), {
@@ -550,7 +561,7 @@ export default {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
       const token = env.TG_TOKEN;
       if (!token) return new Response('TG_TOKEN not set', { status: 500 });
-      const resp   = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
+      const resp = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
       const result = await resp.json();
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'Content-Type': 'application/json' },
@@ -559,53 +570,35 @@ export default {
 
     if (path === '/delete-message') {
       if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
-
-      const chat_id               = url.searchParams.get('chat_id');
-      const message_id            = url.searchParams.get('message_id');
+      const chat_id = url.searchParams.get('chat_id');
+      const message_id = url.searchParams.get('message_id');
       const business_connection_id = url.searchParams.get('business_connection_id');
-
       if (!message_id) {
         return new Response(JSON.stringify({ error: 'Missing message_id' }), {
-          status:  400,
-          headers: { 'Content-Type': 'application/json' },
+          status: 400, headers: { 'Content-Type': 'application/json' },
         });
       }
-
       const token = env.TG_TOKEN;
       if (!token) return new Response('TG_TOKEN not set', { status: 500 });
-
       let apiMethod, body;
-
       if (business_connection_id) {
         apiMethod = 'deleteBusinessMessages';
-        body = {
-          business_connection_id,
-          message_ids: [parseInt(message_id, 10)],
-        };
+        body = { business_connection_id, message_ids: [parseInt(message_id, 10)] };
       } else {
         if (!chat_id) {
-          return new Response(JSON.stringify({ error: 'Missing chat_id (required when no business_connection_id)' }), {
-            status:  400,
-            headers: { 'Content-Type': 'application/json' },
+          return new Response(JSON.stringify({ error: 'Missing chat_id' }), {
+            status: 400, headers: { 'Content-Type': 'application/json' },
           });
         }
         apiMethod = 'deleteMessage';
-        body = {
-          chat_id:    parseInt(chat_id,    10),
-          message_id: parseInt(message_id, 10),
-        };
+        body = { chat_id: parseInt(chat_id, 10), message_id: parseInt(message_id, 10) };
       }
-
       const resp = await fetch(`https://api.telegram.org/bot${token}/${apiMethod}`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const result = await resp.json();
-
       return new Response(JSON.stringify(result, null, 2), {
-        status:  result.ok ? 200 : 400,
-        headers: { 'Content-Type': 'application/json' },
+        status: result.ok ? 200 : 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
