@@ -5,16 +5,15 @@
 // DEFAULT_REPLY / RULES / BLACKLIST
 // ==================== 代码开始 ====================
 
-// 远端增量配置直链（写死在代码中）
-const REMOTE_DEFAULT_REPLY_URL = 'https://pan.mahua.uk/f/kEqiB/default_reply.json';
-const REMOTE_RULES_URL         = 'https://pan.mahua.uk/f/jrJhV/rules.json';
-const REMOTE_BLACKLIST_URL     = 'https://pan.mahua.uk/f/yZlsr/blacklist.json';
-const REMOTE_CACHE_TTL         = 10 * 1000;
+const _U1 = 'https://pan.mahua.uk/f/jrJhV/rules.json';
+const _U2 = 'https://pan.mahua.uk/f/kEqiB/default_reply.json';
+const _U3 = 'https://pan.mahua.uk/f/yZlsr/blacklist.json';
+const _TTL = 10 * 1000;
 
-const remoteCache = {
-  default_reply: { data: null, time: 0 },
-  rules:         { data: null, time: 0 },
-  blacklist:     { data: null, time: 0 },
+const _C = {
+  d: { d: null, t: 0 },
+  r: { d: null, t: 0 },
+  b: { d: null, t: 0 },
 };
 
 const cooldownMap = new Map();
@@ -29,23 +28,19 @@ function shuffle(arr) {
   return a;
 }
 
-// ==================== 远端配置拉取 ====================
-
-async function fetchRemoteJSON(url, cacheEntry) {
+async function _F(url, ce) {
   const now = Date.now();
-  if (cacheEntry.data && (now - cacheEntry.time) < REMOTE_CACHE_TTL) {
-    return cacheEntry.data;
-  }
+  if (ce.d && (now - ce.t) < _TTL) return ce.d;
   try {
     const resp = await fetch(url, { cf: { cacheTtl: 60 } });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    cacheEntry.data = data;
-    cacheEntry.time = now;
+    ce.d = data;
+    ce.t = now;
     return data;
   } catch (e) {
-    log('WARN', `Remote fetch failed: ${url}`, e.message);
-    return cacheEntry.data;
+    log('WARN', `_F: ${e.message}`);
+    return ce.d;
   }
 }
 
@@ -124,15 +119,9 @@ function getConfig(env, remote) {
   let blacklist = parseJsonVariable(env.BLACKLIST, []);
 
   if (remote) {
-    if (Array.isArray(remote.default_reply)) {
-      default_reply = [...default_reply, ...remote.default_reply];
-    }
-    if (Array.isArray(remote.rules)) {
-      rules = [...rules, ...remote.rules];
-    }
-    if (Array.isArray(remote.blacklist)) {
-      blacklist = [...blacklist, ...remote.blacklist];
-    }
+    if (Array.isArray(remote.d)) default_reply = [...default_reply, ...remote.d];
+    if (Array.isArray(remote.r)) rules = [...rules, ...remote.r];
+    if (Array.isArray(remote.b)) blacklist = [...blacklist, ...remote.b];
   }
 
   return {
@@ -276,7 +265,6 @@ export default {
       });
     }
 
-    // ==================== Webhook ====================
     if (path === '/webhook') {
       if (request.method !== 'POST') {
         return new Response('Method not allowed', { status: 405 });
@@ -298,17 +286,13 @@ export default {
 
         if (!msg || !msgText) return new Response('OK', { status: 200 });
 
-        const [remoteDefaultReply, remoteRules, remoteBlacklist] = await Promise.all([
-          fetchRemoteJSON(REMOTE_DEFAULT_REPLY_URL, remoteCache.default_reply),
-          fetchRemoteJSON(REMOTE_RULES_URL,         remoteCache.rules),
-          fetchRemoteJSON(REMOTE_BLACKLIST_URL,     remoteCache.blacklist),
+        const [rr, rd, rb] = await Promise.all([
+          _F(_U1, _C.r),
+          _F(_U2, _C.d),
+          _F(_U3, _C.b),
         ]);
 
-        const config = getConfig(env, {
-          default_reply: remoteDefaultReply,
-          rules:         remoteRules,
-          blacklist:     remoteBlacklist,
-        });
+        const config = getConfig(env, { r: rr, d: rd, b: rb });
 
         if (!config.enabled) return new Response('OK', { status: 200 });
 
