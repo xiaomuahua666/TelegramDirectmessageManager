@@ -7,9 +7,8 @@ TGDM 是一个功能完备的 Telegram 私聊机器人，支持**自定义标签
 
 ## 部署方式
 
-TGDM 提供三种灵活的部署方案，以适应不同的使用场景和技术偏好：
+TGDM 提供两种基于 Cloudflare Workers 的部署方案，以适应不同需求：
 
-*   **🐍 Python 版**：适用于拥有 VPS 或本地服务器的用户，提供更强的自定义能力和数据持久化。
 *   **☁️ Cloudflare Workers 版（无 KV）**：基于无服务器架构，利用 Cloudflare 的免费额度即可运行，部署简便，适合轻量级应用。
 *   **💾 Cloudflare Workers 版（有 KV）**：在无 KV 版基础上增加**删除上一条回复**功能，适合需要保持聊天界面整洁的用户。
 
@@ -17,7 +16,6 @@ TGDM 提供三种灵活的部署方案，以适应不同的使用场景和技术
 
 *   [功能特性](#-功能特性)
 *   [文件结构](#-文件结构)
-*   [Python 版部署](#-python-版部署)
 *   [Cloudflare Workers 版部署（无 KV）](#-cloudflare-workers-版部署无-kv)
 *   [Cloudflare Workers 版部署（有 KV）](#-cloudflare-workers-版部署有-kv)
 *   [自定义标签语法](#-自定义标签语法)
@@ -29,35 +27,29 @@ TGDM 提供三种灵活的部署方案，以适应不同的使用场景和技术
 
 ## ✨ 功能特性
 
-以下表格详细对比了 Python 版和 Cloudflare Workers 版的功能支持情况：
+以下表格详细对比了 Cloudflare Workers 两个版本的功能支持情况：
 
-| 功能特性                   | Python 版 | Workers 版<br>(无 KV) | Workers 版<br>(有 KV) | 备注                                   |
-| :------------------------- | :-------- | :-------------------- | :-------------------- | :------------------------------------- |
-| 自动回复（关键词+默认）    | ✅        | ✅                    | ✅                    |                                        |
-| 自定义标签转 HTML          | ✅        | ✅                    | ✅                    |                                        |
-| 毫秒级延迟响应             | ✅        | ✅                    | ✅                    |                                        |
-| 黑名单功能                 | ✅        | ✅                    | ✅                    |                                        |
-| Business 账号支持          | ✅        | ✅                    | ✅                    |                                        |
-| 内联按钮（URL）            | ❌        | ✅                    | ✅                    |                                        |
-| 媒体回复（图片/视频/文件等）| ❌        | ✅                    | ✅                    |                                        |
-| Premium Emoji 发送         | ❌        | ✅                    | ✅                    | 通过 `<em>` 标签实现                  |
-| "正在输入"状态             | ❌        | ✅                    | ✅                    | 可开关                                 |
-| 用户冷却时间               | ❌        | ✅                    | ✅                    | 纯内存实现，重启重置                   |
-| 规则优先级                 | ❌        | ✅                    | ✅                    | 多条规则同时命中时选最高优先级         |
-| 全消息类型响应             | ❌        | ✅                    | ✅                    | 图片/贴纸/文件等非文本消息也会自动回复 |
-| **删除上一条回复**         | ❌        | ❌                    | ✅                    | 需要 KV 绑定，可保持聊天界面整洁       |
-| 用户数据统计               | ✅        | ❌                    | ❌                    |                                        |
-| 不重复随机回复             | ✅        | ❌                    | ❌                    |                                        |
-| 配置热加载                 | ✅        | ⚠️                    | ⚠️                    | Workers 版修改环境变量后需重新部署     |
+| 功能特性                   | Workers 版<br>(无 KV) | Workers 版<br>(有 KV) | 备注                                   |
+| :------------------------- | :-------------------- | :-------------------- | :------------------------------------- |
+| 自动回复（关键词+默认）    | ✅                    | ✅                    |                                        |
+| 自定义标签转 HTML          | ✅                    | ✅                    |                                        |
+| 毫秒级延迟响应             | ✅                    | ✅                    |                                        |
+| 黑名单功能                 | ✅                    | ✅                    |                                        |
+| Business 账号支持          | ✅                    | ✅                    |                                        |
+| 内联按钮（URL）            | ✅                    | ✅                    |                                        |
+| 媒体回复（图片/视频/文件等）| ✅                    | ✅                    |                                        |
+| Premium Emoji 发送         | ✅                    | ✅                    | 通过 `<em>` 标签实现                  |
+| "正在输入"状态             | ✅                    | ✅                    | 可开关                                 |
+| 用户冷却时间               | ✅                    | ✅                    | 纯内存实现，重启重置                   |
+| 规则优先级                 | ✅                    | ✅                    | 多条规则同时命中时选最高优先级         |
+| 全消息类型响应             | ✅                    | ✅                    | 图片/贴纸/文件等非文本消息也会自动回复 |
+| **删除上一条回复**         | ❌                    | ✅                    | 需要 KV 绑定，可保持聊天界面整洁       |
+| 配置热加载                 | ⚠️                    | ⚠️                    | Workers 版修改环境变量后需重新部署     |
 
 ## 📁 文件结构
 
 ```
 tgdm/
-├── main.py              # Python 版主程序
-├── config.json          # Python 版配置文件
-├── token.txt            # Python 版 Bot Token
-├── users.json           # Python 版用户数据（自动生成）
 ├── worker.js            # Cloudflare Workers 版代码（无 KV）
 ├── worker-kv.js         # Cloudflare Workers 版代码（有 KV）
 ├── .gitignore           # Git 忽略文件
@@ -65,89 +57,13 @@ tgdm/
 └── README.md            # 本文件
 ```
 
-## 🐍 Python 版部署
-
-### 1. 安装依赖
-
-```bash
-pip install aiogram
-```
-
-### 2. 获取 Bot Token
-
-在 Telegram 中搜索 `@BotFather`，创建机器人并获取您的 Bot Token。
-
-### 3. 配置 Token
-
-创建 `token.txt` 文件，并将您的 Bot Token 写入其中：
-
-```text
-你的BotToken
-```
-
-### 4. 配置 `config.json`
-
-编辑 `config.json` 文件，根据您的需求进行配置：
-
-```json
-{
-  "enabled": true,
-  "owner_id": 你的TelegramID,
-  "ignore_owner": true,
-  "reply_mode": true,
-  "delay": {
-    "enabled": true,
-    "min": 50,
-    "max": 100
-  },
-  "default_reply": [
-    "[AutoReply] 你好，有什么可以帮助你的吗？",
-    "[AutoReply] 请稍等，我会尽快回复你的。"
-  ],
-  "rules": [
-    {
-      "keywords": ["你好", "您好"],
-      "reply": "你好呀！"
-    }
-  ],
-  "blacklist": []
-}
-```
-
-**配置说明：**
-
-| 字段          | 类型    | 说明                                     |
-| :------------ | :------ | :--------------------------------------- |
-| `enabled`     | boolean | 机器人总开关                             |
-| `owner_id`    | int     | 管理员 Telegram ID                       |
-| `ignore_owner`| boolean | 是否忽略管理员消息                       |
-| `reply_mode`  | boolean | 是否引用回复原消息                       |
-| `delay.enabled`| boolean | 是否启用延迟回复                         |
-| `delay.min`   | int     | 最小延迟时间（毫秒）                     |
-| `delay.max`   | int     | 最大延迟时间（毫秒）                     |
-| `default_reply`| string/array | 默认回复内容，可为字符串或字符串数组     |
-| `rules`       | array   | 关键词匹配规则，包含 `keywords` 和 `reply` |
-| `blacklist`   | array   | 黑名单用户 ID 列表                       |
-
-### 5. 运行
-
-```bash
-python main.py
-```
-
-### 注意事项
-
-1.  **Token 安全**：请勿将 `token.txt` 上传到公开仓库。
-2.  **Business 账号**：默认使用 `business_message`。普通账号需将 `main.py` 中的 `allowed_updates` 改为 `["message"]`。
-3.  **热加载**：修改 `config.json` 后，下一条消息即可生效，无需重启机器人。
-
 ## ☁️ Cloudflare Workers 版部署（无 KV）
 
 这是基础版本，不需要绑定 KV，适合快速部署和使用。
 
 ### 1. 获取 Bot Token
 
-同 Python 版，通过 `@BotFather` 获取您的 Bot Token。
+在 Telegram 中搜索 `@BotFather`，创建机器人并获取您的 Bot Token。
 
 ### 2. 创建 Worker
 
@@ -379,7 +295,7 @@ last_reply:{用户ID} → {
 
 ### 注意事项
 
-1.  **KV 免费额度**：Cloudflare KV 每天提供 100 万次读取、100 万次写入的免费额度，对于个人使用完全足够。
+1.  **KV 免费额度**：Cloudflare KV 每天提供 10 万次读取、1000 次写入的免费额度，对于个人使用完全足够。
 2.  **`KEEP_LAST_ONLY` 开关**：如果不需要删除功能，可将此变量设为 `false`，此时有 KV 版本的行为与无 KV 版本一致。
 3.  **Business 账号兼容**：有 KV 版本完美支持 Telegram Business 账号的 `deleteBusinessMessages` API。
 4.  **多用户隔离**：每个用户独立存储，互不干扰，不会出现删错消息的情况。
@@ -522,14 +438,6 @@ Workers 版支持通过规则直接发送图片、视频、音频、文件等媒
 <details>
 <summary><b>Q: 机器人没有反应？</b></summary>
 
-**Python 版：**
-
-*   检查 `token.txt` 中的 Bot Token 是否正确。
-*   检查 `config.json` 中 `enabled` 字段是否为 `true`。
-*   如果使用的是普通 Telegram 账号，请将 `main.py` 中的 `allowed_updates` 从 `business_message` 改为 `["message"]`。
-
-**Workers 版：**
-
 *   检查 `TG_TOKEN` 环境变量是否正确设置。
 *   检查 `BOT_ENABLED` 环境变量是否为 `true`。
 *   访问 `/webhook-info?token=你的ADMIN_TOKEN` 调试端点查看 Webhook 状态。
@@ -539,10 +447,7 @@ Workers 版支持通过规则直接发送图片、视频、音频、文件等媒
 <details>
 <summary><b>Q: 如何获取用户 ID？</b></summary>
 
-用户向机器人发送消息后：
-
-*   **Python 版**：查看控制台打印的 `[uid]` 信息。
-*   **Workers 版**：查看 Cloudflare Worker 的日志，或在消息中临时添加 `<tj>ID</tj>` 标签回复给用户。
+用户向机器人发送消息后，查看 Cloudflare Worker 的日志，或在消息中临时添加 `<tj>ID</tj>` 标签回复给用户。
 
 </details>
 
@@ -570,13 +475,6 @@ Workers 版已支持全消息类型响应（图片、贴纸、文件、语音等
 1.  将已有的 Premium emoji 消息转发给 `@raw_data_bot`。
 2.  在返回的 JSON 中搜索 `custom_emoji_id`，后面的数字即为 ID。
 3.  在规则中使用：`<em id="数字ID">fallback emoji</em>`。
-
-</details>
-
-<details>
-<summary><b>Q: Python 版和 Workers 版可以同时运行吗？</b></summary>
-
-**不可以**。同一个 Bot Token 只能绑定一个消息接收端点（要么通过轮询，要么通过 Webhook）。建议您根据实际需求选择一种部署方式。
 
 </details>
 
