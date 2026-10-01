@@ -26,6 +26,8 @@ TGDM 提供两种基于 Cloudflare Workers 的部署方案，以适应不同需�
 - [内联按钮](#-内联按钮)
 - [媒体回复](#-媒体回复)
 - [规则优先级与冷却时间](#-规则优先级与冷却时间)
+- [机器人如何读取你的消息](#-机器人如何读取你的消息)
+- [远端配置说明](#-远端配置说明)
 - [常见问题](#-常见问题)
 - [许可证](#-许可证)
 
@@ -51,12 +53,14 @@ TGDM 提供两种基于 Cloudflare Workers 的部署方案，以适应不同需�
 ## 📁 文件结构
 
 ```
-tgdm/
-├── worker.js            # 无 KV 版
-├── worker-kv.js         # 有 KV 版
+TelegramDirectmessageManager/
+├── wkoutKV/worker.js    # 无 KV 版
+├── wkwithKV/worker.js   # 有 KV 版
 ├── LICENSE
 └── README.md
 ```
+
+> 部署时把对应目录下的 `worker.js` 内容整份复制到 Cloudflare Worker 编辑器中。
 
 ## ☁️ Cloudflare Workers 版部署（无 KV）
 
@@ -79,7 +83,7 @@ tgdm/
 | :--------------- | :--------------- |
 | `TG_TOKEN`       | 机器人 Token     |
 | `ADMIN_TOKEN`    | 管理端点鉴权 Token |
-| `WEBHOOK_SECRET` | Webhook 安全校验 Token（可选） |
+| `WEBHOOK_SECRET` | Webhook 安全校验 Token（可选，见下方说明） |
 
 **纯文本类型（Plain text）：**
 
@@ -97,7 +101,7 @@ tgdm/
 | `COOLDOWN_SECONDS`         | `30`                             | 冷却秒数             |
 | `AI_ENABLED`               | `false`                          | AI 检测开关          |
 | `AI_AD_REPLY`              | 见下文                           | AI 判定广告时的回复  |
-| `AI_MODEL`                 | `@cf/meta/llama-3.1-8b-instruct` | AI 模型              |
+| `AI_MODEL`                 | `@cf/meta/llama-3.1-8b-instruct-fp8-fast` | AI 模型              |
 
 **JSON 类型：**
 
@@ -142,6 +146,28 @@ tgdm/
 
 向机器人发送消息，检查回复。
 
+### 关于 `WEBHOOK_SECRET`（可选但推荐）
+
+它是一道门锁：Telegram 每次投递 Update 时都会在 `X-Telegram-Bot-Api-Secret-Token` 请求头里带上这个值，Worker 会校验它。用来防止别人拿到你的 Worker 域名后伪造 Update，骗你的机器人替他发消息、白耗你的 Workers AI 额度。
+
+**不设置也能正常运行** —— 未设置时代码完全跳过校验，日常收发消息行为与设置时完全一致，所以设置后短期内看不出区别。
+
+字符限制：**只能包含 `A-Z`、`a-z`、`0-9`、`_`、`-`**，长度 1-256。含中文或 `+`、`/`、`.` 等字符会被 `setWebhook` 拒绝。
+
+> ⚠️ **修改 `WEBHOOK_SECRET` 后必须重新访问一次 `/setup`**。否则 Telegram 仍按旧值发头、Worker 按新值校验，所有请求返回 403，机器人彻底不回消息，且现象容易被误判为其他故障。正确顺序：改环境变量 → 重新部署 → 访问 `/setup?token=你的ADMIN_TOKEN`。
+
+> ⚠️ **`ADMIN_TOKEN` 必须设置**。它未设置时所有管理端点一律返回 403（fail-closed 设计），此时你连 `/setup` 都访问不了。
+
+关于 `ADMIN_TOKEN` 的鉴权方式，二选一即可：
+
+```bash
+# 方式一：URL 查询参数（方便浏览器直接打开）
+https://你的worker域名/setup?token=你的ADMIN_TOKEN
+
+# 方式二：Bearer Token
+curl -H "Authorization: Bearer 你的ADMIN_TOKEN" https://你的worker域名/setup
+```
+
 ### 调试端点
 
 | 路径              | 功能           |
@@ -173,7 +199,11 @@ graph TD
     D --> E[将新消息 ID 保存到 KV]
 ```
 
-每个用户独立存储，数据保留 48 小时。
+每个用户独立存储，数据保留 48 小时（与 Telegram 自身的消息删除时限一致）。
+
+> 旧回复在**发送新回复之前**被删除。因此若新回复发送失败，该用户此处可能一条回复都不剩。
+>
+> Business 账号场景下的删除需要相应权限（`can_delete_sent_messages` 或 `can_delete_all_messages`）。权限不足时删除会失败，仅在日志中记录 `WARN`，消息不会被清理。
 
 ## 🤖 AI 广告检测配置
 
@@ -185,7 +215,7 @@ graph TD
 2.  **设置环境变量**：
     *   `AI_ENABLED = true`
     *   `AI_AD_REPLY = <yy><jd><xt>广告滚开</xt></jd></yy> 😅`
-    *   （可选）`AI_MODEL = @cf/meta/llama-3.1-8b-instruct`
+    *   （可选）`AI_MODEL = @cf/meta/llama-3.1-8b-instruct-fp8-fast`
 3.  **重新部署**。
 
 ### 优先级逻辑
@@ -244,6 +274,10 @@ graph TD
 
 根据配置位置的不同，转义要求完全不同：
 
+这里有两类转义，**互不相同**，容易混淆。
+
+### 一、JSON 层面的引号转义
+
 | 配置位置                   | 格式               | 转义要求                                     | 正确示例                                                                  |
 | :------------------------- | :----------------- | :------------------------------------------- | :------------------------------------------------------------------------ |
 | `AI_AD_REPLY` 环境变量     | 纯文本             | 不要任何转义                                 | `<em id="123">😅</em>` ✅ <br> `<em id=\"123\">😅</em>` ❌ |
@@ -255,6 +289,29 @@ graph TD
 
 *   ❌ 在 `AI_AD_REPLY` 中写 `\"` 导致发送失败。
 *   ❌ 在 `RULES` 的 JSON 中忘记转义双引号，导致 JSON 解析失败。
+
+### 二、HTML 实体转义（由 Worker 自动完成）
+
+回复会以 `parse_mode: HTML` 发送，Telegram 要求正文中不属于标签的 `<`、`>`、`&` 必须写成 HTML 实体，否则整条消息被拒（400 `can't parse entities`）。
+
+Worker 会自动处理，无需手动干预：
+
+*   裸 `&`、`<`、`>` 自动转成 `&amp;`、`&lt;`、`&gt;`
+*   已经写成实体的 `&amp;`、`&lt;`、`&#65;` **不会**被重复转义
+*   上表所有自定义标签、以及 `<b>` `<i>` `<a href>` 等原生 Telegram 标签都会正常保留
+
+所以配置里写 `AT&T`、`1<2`、`R&D` 这类文案是**安全的**，直接写即可。
+
+> 说明：`<js>` 会转成 `<pre>`（不带语言），因此没有语法高亮。`<yy>` 转成 `<blockquote>`、`<yyzd>` 转成 `<blockquote expandable>`。
+
+### 三、长度限制（Telegram 硬限制，Worker 不做截断）
+
+| 位置                | 上限   |
+| :------------------ | :----- |
+| `text`（纯文本回复） | 4096 字符 |
+| `caption`（媒体说明）| 1024 字符 |
+
+超出后 Telegram 拒绝发送，控制台会记录 `Send failed`。请自行控制 `RULES` / `DEFAULT_REPLY` / `AI_AD_REPLY` 的文案长度。
 
 ## 🔘 内联按钮
 
@@ -275,6 +332,10 @@ graph TD
 
 支持的 `type`：`photo`、`video`、`audio`、`document`、`animation`。
 
+> 未列出的类型（如 `sticker`、`voice`）会统一按 `document` 发送。
+> `reply` 可省略：只写 `media` 时发送纯媒体不带说明文字。
+> 带 `reply` 时它会成为 `caption`，上限 1024 字符。
+
 ```json
 {
   "keywords": ["图片"],
@@ -289,7 +350,58 @@ graph TD
 ## ⚡ 规则优先级与冷却时间
 
 *   **优先级**：`priority` 数值越高越优先（默认 `0`）。
+*   **优先级相同时**，配置中靠前的那条规则胜出。
+*   **关键词匹配**为不区分大小写的子串包含匹配：规则 `["你好"]` 会命中"你好呀"。
 *   **冷却**：`COOLDOWN_ENABLED=true` 时，同一用户在 `COOLDOWN_SECONDS` 秒内只回复一次（内存存储，重启重置）。
+*   **注意**：冷却计时在回复逻辑之前就已写入，**被冷却拦下的消息同样会消耗冷却额度**。
+
+## 🔍 机器人如何读取你的消息
+
+理解这一点有助于配置规则和排查问题。
+
+### 非文本消息会变成占位符
+
+`getMessageText` 按 `text` → `caption` → 各媒体类型的顺序取值。取不到文本时使用占位符：
+
+| 你发的            | 机器人读到的文本  |
+| :---------------- | :--------------- |
+| 文字              | 原文            |
+| 媒体 + 说明文字   | 说明文字        |
+| 纯图片            | `[图片]`        |
+| 纯视频            | `[视频]`        |
+| 纯贴纸            | `[贴纸]`        |
+| 纯文件            | `[文件]`        |
+| 纯音频 / 语音     | `[音频]` / `[语音]` |
+| 纯 GIF            | `[GIF]`         |
+| 位置 / 联系人 / 投票 / 骰子 | `[位置]` / `[联系人]` / `[投票]` / `[骰子]` |
+
+> ⚠️ **占位符会参与关键词匹配和 AI 广告检测。** 例如规则关键词含 `图` 时，用户只发一张图片不配文字，也会被命中并回复。
+
+### 转发消息
+
+Worker **不区分**转发消息和用户自己输入的消息 —— 转发来的内容会按原文参与规则匹配与 AI 检测。
+
+### 关于按钮
+
+用户在自己的私聊里发送的消息**不会携带按钮**。`reply_markup`（内联键盘）只出现在机器人自己发出的消息上，所以无法从收到的 Update 中检测到"对方发来的消息带按钮"。
+
+若你的目的是识别对方消息里的可点链接或指令，需要看 `entities` 字段（`text_link`、`url`、`bot_command`），而非 `reply_markup`。
+
+## ⚙️ 远端配置说明
+
+Worker 会从以下固定地址拉取配置，与环境变量中的配置**合并**（远端项追加在环境变量之后）：
+
+| 用途     | 地址 |
+| :------- | :--- |
+| 规则     | `_U1` 常量所指向的 rules.json |
+| 默认回复 | `_U2` 常量所指向的 default_reply.json |
+| 黑名单   | `_U3` 常量所指向的 blacklist.json |
+
+*   缓存：Worker 实例内 10 秒 + Cloudflare 边缘 60 秒
+*   远端拉取失败时**静默降级**为仅使用环境变量配置，并在日志记录 `WARN`
+*   规则优先级相同时，环境变量中的规则排在前面因而胜出
+
+> 📌 `/config` 端点只统计**环境变量**中的条数，不含远端配置。当规则主要写在远端时，该端点显示的 `rules_count` 会小于实际生效数量。
 
 ## ❓ 常见问题
 
@@ -297,6 +409,29 @@ graph TD
 <summary><b>机器人没有反应？</b></summary>
 
 检查 `TG_TOKEN`、`BOT_ENABLED`，访问 `/webhook-info?token=ADMIN_TOKEN` 查看 Webhook 状态。
+
+若 `/webhook-info` 显示 `last_error_message` 为 403 或 `Forbidden`，多半是修改 `WEBHOOK_SECRET` 后没有重新访问 `/setup` —— 重新访问一次即可。
+
+</details>
+
+<details>
+<summary><b>改了 WEBHOOK_SECRET 后机器人完全不回消息了？</b></summary>
+
+必须重新访问 `https://你的worker域名/setup?token=ADMIN_TOKEN`，让 Telegram 更新它记录的 secret_token。顺序是：改环境变量 → 重新部署 → 访问 `/setup`。
+
+</details>
+
+<details>
+<summary><b>管理端点全部返回 403？</b></summary>
+
+多半是 `ADMIN_TOKEN` 未设置。未设置时所有管理端点一律拒绝（fail-closed）。先设置 `ADMIN_TOKEN` 再重新部署。
+
+</details>
+
+<details>
+<summary><b>回复里带 & 或 < 就发不出去？</b></summary>
+
+旧版本存在此问题，新版本已自动转义为 HTML 实体。若仍失败，检查文案是否超过 4096 字符（媒体说明上限 1024）。
 
 </details>
 
