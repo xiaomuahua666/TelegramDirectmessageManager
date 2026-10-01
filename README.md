@@ -270,6 +270,28 @@ graph TD
 
 嵌套规则：`<jd>`、`<xt>`、`<xh>`、`<sc>`、`<jh>` 可互相嵌套；`<yy>` 内可含上述标签；`<dk>`、`<js>`、`<yy>` 内不能再嵌套 `<yy>`。
 
+### 转换结果对照
+
+下表每一行都经过实际转换验证，可放心复制使用。
+
+| 写法 | 实际发给Telegram 的 HTML |
+| :--- | :--- |
+| `第一行</n>第二行` | `第一行\n第二行`（真换行） |
+| `<yy>引用内容</yy>` | `<blockquote>引用内容</blockquote>` |
+| `<yyzd>详细说明</yyzd>` | `<blockquote expandable>详细说明</blockquote>` |
+| `<dk>const a = 1</dk>` | `<code>const a = 1</code>` |
+| `<jd>重要</jd>` | `<b>重要</b>` |
+| `<xt>强调</xt>` | `<i>强调</i>` |
+| `<sc>旧内容</sc>` | `<s>旧内容</s>` |
+| `<xh>重点</xh>` | `<u>重点</u>` |
+| `<js>def f(): pass</js>` | `<pre>def f(): pass</pre>` |
+| `<jh>猜猜看</jh>` | `<tg-spoiler>猜猜看</tg-spoiler>` |
+| `<lj url="https://example.com">链接</lj>` | `<a href="https://example.com">链接</a>` |
+| `<tj>123456789</tj>` | `<a href="tg://user?id=123456789">123456789</a>` |
+| `<em id="6323518884347381156">👋</em>` | `<tg-emoji emoji-id="6323518884347381156">👋</tg-emoji>` |
+| `<jd><xt>又粗又斜</xt></jd>` | `<b><i>又粗又斜</i></b>` |
+| `<yy>看这个 <jd>重点</jd> 和 <xh>下划</xh></yy>` | `<blockquote>看这个 <b>重点</b> 和 <u>下划</u></blockquote>` |
+
 ## ⚠️ 转义规则（重要）
 
 根据配置位置的不同，转义要求完全不同：
@@ -346,6 +368,91 @@ Worker 会自动处理，无需手动干预：
   }
 }
 ```
+
+## 📋 完整 RULES 示例
+
+下面这份配置涵盖**全部**可用语法，可直接复制使用（注意 JSON 内的双引号需转义为 `\"`）。
+
+```json
+[
+  {
+    "keywords": ["广告", "推广", "spam"],
+    "reply": "<yy><jd><xt>广告勿扰</xt></jd></yy> 此类信息不予回复",
+    "priority": 100
+  },
+  {
+    "keywords": ["价格", "多少钱", "收费"],
+    "reply": "<yy>关于费用：</yy></n><jd>基础版</jd>：免费</n><jd>进阶版</jd>：￥20/月</n>详情见 <lj url=\"https://example.com/pricing\">定价页</lj>",
+    "buttons": [
+      [{"text": "💰 查看定价", "url": "https://example.com/pricing"}],
+      [{"text": "📧 咨询客服", "url": "mailto:hi@example.com"}, {"text": "💬 Telegram", "url": "https://t.me/username"}]
+    ],
+    "priority": 50
+  },
+  {
+    "keywords": ["文档", "说明书", "guide"],
+    "reply": "<jd>使用说明</jd></n><js>curl -X POST https://example.com/api</js></n>返回字段：<dk>message_id</dk>",
+    "priority": 40
+  },
+  {
+    "keywords": ["截图", "示例图"],
+    "reply": "<yy>示例如下</yy>",
+    "media": { "type": "photo", "url": "https://example.com/screenshot.jpg" },
+    "priority": 30
+  },
+  {
+    "keywords": ["教程视频"],
+    "media": { "type": "video", "url": "https://example.com/tutorial.mp4" },
+    "priority": 30
+  },
+  {
+    "keywords": ["宣传片"],
+    "media": { "type": "animation", "url": "https://example.com/promo.gif" },
+    "priority": 30
+  },
+  {
+    "keywords": ["开通", "激活"],
+    "reply": "<yy>欢迎开通</yy> 请联系 <tj>123456789</tj> 办理</n>收到 <em id=\"5368324170671202286\">👍</em> 后我们尽快处理",
+    "buttons": [[{"text": "🚀 立即开通", "url": "https://example.com/activate"}]],
+    "priority": 20
+  },
+  {
+    "keywords": ["彩蛋"],
+    "reply": "<jh>恭喜你发现了彩蛋！</jh>",
+    "priority": 10
+  },
+  {
+    "keywords": ["帮助", "help", "怎么用"],
+    "reply": "<yy><jd>我可以帮你：</jd></n>• 查看定价（发送「价格」）</n>• 获取文档（发送「文档」）</n>• 查看示例（发送「截图」）</n>• 联系人工（发送「联系」）</n>直接向我提问也可以</n></yy>",
+    "buttons": [
+      [{"text": "📖 文档", "url": "https://example.com/docs"}, {"text": "💬 人工", "url": "https://t.me/username"}],
+      [{"text": "🌐 官网", "url": "https://example.com"}]
+    ],
+    "priority": 0
+  }
+]
+```
+
+> 配置时请勿使用语法表之外的标签 —— 不存在的标签不会被转换，会原样发出去。
+
+### 字段说明
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :---: | :--- |
+| `keywords` | 字符串数组 | ✅ | 命中任一即触发，不区分大小写 |
+| `reply` | 字符串 | — | 回复内容，支持全部自定义标签 |
+| `priority` | 数字 | — | 越大越优先，默认 `0` |
+| `buttons` | 二维数组 | — | `[[{text,url}], [{text,url}]]`，每个内层数组为一行 |
+| `media` | 对象 | — | `{type, url}`，`type` 见媒体回复章节 |
+
+### 编写建议
+
+*   **关键词不要过于宽泛**：`["的"]` 这类几乎会命中所有消息，导致其他规则永远不触发。
+*   **优先级留出间隔**：用 10、20、30 这样的整十数，方便日后在中间插入新规则。
+*   **广告类规则给最高优先级**（示例中的 `100`），确保它在业务规则之前生效。
+*   **JSON 内不要留注释和尾随逗号**，会导致解析失败并静默退回内置默认回复。
+*   **标签必须闭合**：`<yy>文字` 缺少 `</yy>` 时标签不会生效，且会被原样（转义后）发出。
+*   **换行必须用 `</n>`**：JSON 字符串里不能直接写换行符。
 
 ## ⚡ 规则优先级与冷却时间
 
