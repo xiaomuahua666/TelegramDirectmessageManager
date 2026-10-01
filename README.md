@@ -14,9 +14,55 @@ TGDM 提供两种基于 Cloudflare Workers 的部署方案，以适应不同需�
 
 > AI 广告检测是可选功能，可在这两种部署中任意开启。
 
+**完全免费**：Cloudflare Workers 免费额度对个人使用足够，无需付费、无需服务器、无需域名。
+
+## 📥 获取代码
+
+前往 [Releases 页面](https://github.com/xiaomuahua666/TelegramDirectmessageManager/releases) 下载：
+
+| 下载文件          | 说明 |
+| :---------------- | :--- |
+| `worker-withoutKV.zip` | 无 KV 版，解压后得到 `worker.js` |
+| `worker-withKV.zip`    | 有 KV 版，解压后得到 `worker.js` |
+
+解压后你会得到一个 `worker.js` 文件，**它的全部内容就是你要粘贴到 Cloudflare 的东西**。
+
+不确定选哪个？选 `worker-withoutKV.zip`。有 KV 版多了「自动删除上一条回复」的功能，会额外消耗 KV 存储额度。
+
+## 📑 名词表
+
+第一次读可能会遇到这些词，先扫一遍：
+
+| 词 | 通俗解释 |
+| :--- | :--- |
+| **Bot Token** | 机器人的身份证。机器人对外的所有操作都靠它证明身份，泄露等于账号被盗 |
+| **Webhook** | 「有事发生时 Telegram 主动来敲你的门」的机制。机器人不用一直轮询，Telegram 有新消息就 POST 到你的网址 |
+| **Worker** | Cloudflare 提供的云端代码运行环境。相当于免费的服务器，代码上传上去就能通过网址访问 |
+| **环境变量 / 变量** | 存在 Worker 里的配置项（如 Token、开关）。相当于给程序的设置项，不用改代码 |
+| **Secret（密钥类型）** | 环境变量的一种，值会被加密存储、不在界面上明文显示。Token 类的东西必须用这种 |
+| **KV** | Cloudflare 的键值数据库。Worker 联网后可读取，用来存少量数据（如「上次回复的消息 ID」） |
+| **Neuron** | Workers AI 的计费单位。免费额度每日 1 万，单次广告判定约消耗 0.3 |
+| **Workers AI** | Cloudflare 内置的 AI 服务，无需申请 API Key，直接绑定即可调用 |
+
+## 📖 本文档怎么读
+
+建议**按顺序读，不要跳**：
+
+| 你的目标 | 读哪些 |
+| :--- | :--- |
+| 从零部署一个能用的机器人 | [功能特性](#-功能特性) → [获取代码](#-获取代码) → [部署](#-cloudflare-workers-版部署无-kv) |
+| 让机器人按关键词回复指定内容 | 上面读完 → [完整 RULES 示例](#-完整-rules-示例) |
+| 加广告识别 | 上面读完 → [AI 广告检测配置](#-ai-广告检测配置) |
+| 回复想带图/视频/按钮 | 上面读完 → [媒体回复](#-媒体回复) → [内联按钮](#-内联按钮) |
+| 机器人不回复 / 报错 | 直接跳到 [常见问题](#-常见问题) |
+| 只是想改文案、换语气 | [完整 RULES 示例](#-完整-rules-示例) → [自定义标签语法](#-自定义标签语法) |
+
 ## 目录
 
+- [名词表](#-名词表)
+- [本文档怎么读](#-本文档怎么读)
 - [功能特性](#-功能特性)
+- [获取代码](#-获取代码)
 - [文件结构](#-文件结构)
 - [Cloudflare Workers 版部署（无 KV）](#-cloudflare-workers-版部署无-kv)
 - [Cloudflare Workers 版部署（有 KV）](#-cloudflare-workers-版部署有-kv)
@@ -25,6 +71,8 @@ TGDM 提供两种基于 Cloudflare Workers 的部署方案，以适应不同需�
 - [转义规则（重要）](#-转义规则重要)
 - [内联按钮](#-内联按钮)
 - [媒体回复](#-媒体回复)
+- [完整 RULES 示例](#-完整-rules-示例)
+- [三个都叫 "reply" 的东西，别搞混](#-三个都叫-reply-的东西别搞混)
 - [规则优先级与冷却时间](#-规则优先级与冷却时间)
 - [机器人如何读取你的消息](#-机器人如何读取你的消息)
 - [远端配置说明](#-远端配置说明)
@@ -52,6 +100,8 @@ TGDM 提供两种基于 Cloudflare Workers 的部署方案，以适应不同需�
 
 ## 📁 文件结构
 
+仓库内的源码结构（供开发者参考，普通用户从 Releases 下载即可）：
+
 ```
 TelegramDirectmessageManager/
 ├── wkoutKV/worker.js    # 无 KV 版
@@ -60,7 +110,7 @@ TelegramDirectmessageManager/
 └── README.md
 ```
 
-> 部署时把对应目录下的 `worker.js` 内容整份复制到 Cloudflare Worker 编辑器中。
+Releases 里的 zip 解压后只含一个 `worker.js`，**把它的全部内容粘贴到 Cloudflare 编辑器**即可，无需关心目录结构。
 
 ## ☁️ Cloudflare Workers 版部署（无 KV）
 
@@ -75,33 +125,39 @@ TelegramDirectmessageManager/
 
 ### 3. 配置环境变量
 
-进入 Worker 的 **设置 → 变量**：
+进入 Worker 的 **设置 → 变量和机密**：
 
-**密钥类型（Secret）：**
+**密钥类型（Secret）—— 必填的三项**
 
-| 变量名           | 说明             |
-| :--------------- | :--------------- |
-| `TG_TOKEN`       | 机器人 Token     |
-| `ADMIN_TOKEN`    | 管理端点鉴权 Token |
-| `WEBHOOK_SECRET` | Webhook 安全校验 Token（可选，见下方说明） |
+| 变量名           | 说明 | 怎么填 |
+| :--------------- | :--- | :----- |
+| `TG_TOKEN`       | 机器人 Token | [@BotFather](https://t.me/BotFather) 创建后给你的那串，形如 `1234567890:AAH...` |
+| `ADMIN_TOKEN`    | 管理端点密码 | 自己编一串随机字符，例如 `my-secret-9x2k`。**不填的话所有管理端点都打不开** |
+| `WEBHOOK_SECRET` | Webhook 校验（可选） | 也自己编一串，**只能字母数字和 `_` `-`** |
 
-**纯文本类型（Plain text）：**
+添加方式：点**添加变量** → 下拉框选 **Secret** → 填名字和值 → 类型保持 **Text** → 保存。
+
+**纯文本类型（Plain text）—— 全部有默认值，一个不填也能跑**
 
 | 变量名                     | 默认值                           | 说明                 |
 | :------------------------- | :------------------------------- | :------------------- |
-| `BOT_ENABLED`              | `true`                           | 总开关               |
-| `OWNER_ID`                 | 空                               | 管理员 ID（数字）    |
-| `IGNORE_OWNER`             | `true`                           | 忽略管理员消息       |
-| `REPLY_MODE`               | `true`                           | 引用回复             |
-| `DELAY_ENABLED`            | `true`                           | 延迟开关             |
+| `BOT_ENABLED`              | `true`                           | 总开关。设`false` 机器人完全不工作 |
+| `OWNER_ID`                 | 空| 你的 Telegram 数字 ID，机器人不会回复你 |
+| `IGNORE_OWNER`             | `true`                           | 是否忽略管理员 |
+| `REPLY_MODE`               | `true`                           | 见 [三个 reply](#-三个都叫-reply-的东西别搞混) |
+| `DELAY_ENABLED`            | `true`                           | 延迟开关，模拟真人打字速度 |
 | `DELAY_MIN`                | `50`                             | 最小延迟（毫秒）     |
 | `DELAY_MAX`                | `100`                            | 最大延迟（毫秒）     |
-| `TYPING_ENABLED`           | `false`                          | 显示"正在输入"       |
-| `COOLDOWN_ENABLED`         | `false`                          | 冷却开关             |
+| `TYPING_ENABLED`           | `false`                          | 显示"正在输入..."，建议开 |
+| `COOLDOWN_ENABLED`         | `false`                          | 冷却开关，防止刷屏 |
 | `COOLDOWN_SECONDS`         | `30`                             | 冷却秒数             |
-| `AI_ENABLED`               | `false`                          | AI 检测开关          |
-| `AI_AD_REPLY`              | 见下文                           | AI 判定广告时的回复  |
-| `AI_MODEL`                 | `@cf/meta/llama-3.1-8b-instruct-fp8-fast` | AI 模型              |
+| `AI_ENABLED`               | `false`                          | AI 广告检测开关，见 [AI 配置](#-ai-广告检测配置) |
+| `AI_AD_REPLY`              | 见下文| 判定为广告时回复的内容 |
+| `AI_MODEL`                 | `@cf/meta/llama-3.1-8b-instruct-fp8-fast` | AI 模型，一般不用改 |
+
+> 💡 **布尔值只认 `true` 和 `false`**（不分大小写）。填 `1`、`yes`、`on` 都会被当作 `false`。这是个容易踩的坑。
+>
+> **最小配置**：只填 `TG_TOKEN` 和 `ADMIN_TOKEN` 就能跑起来了，其余全部有默认值。
 
 **JSON 类型：**
 
@@ -170,24 +226,53 @@ curl -H "Authorization: Bearer 你的ADMIN_TOKEN" https://你的worker域名/set
 
 ### 调试端点
 
-| 路径              | 功能           |
-| :---------------- | :------------- |
-| `/`               | 健康检查       |
-| `/setup`          | 设置 Webhook   |
-| `/webhook-info`   | 查看 Webhook 状态 |
-| `/config`         | 查看配置摘要   |
-| `/test-ai`        | 测试 AI 检测   |
-| `/delete-webhook` | 删除 Webhook   |
-| `/delete-message` | 手动删除消息   |
+部署完可以用浏览器直接访问这些地址排查问题（在 URL 后面加 `?token=你的ADMIN_TOKEN`）：
+
+| 路径              | 用途           | 正常返回 |
+| :---------------- | :------------- | :------- |
+| `/`               | 健康检查，确认 Worker 活着 | `TGDM Bot Worker is running` |
+| `/setup`          | 告诉 Telegram 把消息发到这个地址 | `{"ok": true, ...}` |
+| `/webhook-info`   | 查看 Telegram 那边是否正常 | 含 `pending_update_count`、`last_error_message` |
+| `/config`         | 查看配置是否被正确读取 | 一堆配置项的 JSON |
+| `/test-ai`        | 测试 AI 广告检测 | `{"is_ad": true/false, ...}` |
+| `/delete-webhook` | 删除 Webhook（调试用） | `{"ok": true}` |
+| `/delete-message` | 手动删除某条消息 | `{"ok": true}` |
+
+**排查顺序**（机器人不回消息时按这个顺序走）：
+
+```bash
+# 1. Worker 活着吗？
+curl https://你的域名/
+# 期望：TGDM Bot Worker is running
+
+# 2. 配置读到了吗？（这一条能单独验证 Worker 本身没问题）
+curl "https://你的域名/config?token=你的ADMIN_TOKEN"
+# 期望：一段 JSON
+
+# 3. Telegram 那边正常吗？
+curl "https://你的域名/webhook-info?token=你的ADMIN_TOKEN"
+# 看 pending_update_count 是否有堆积、last_error_message 是否有报错
+
+# 4. 以上都正常 → 直接给机器人发消息测试
+```
+
+| 现象 | 可能原因 |
+| :--- | :--- |
+| `/config` 返回 403 | `ADMIN_TOKEN` 没填或填错 |
+| `/config` 返回 500 或非 JSON | Worker 代码或配置有问题，去看 Cloudflare 实时日志 |
+| `pending_update_count` 持续增长 | Telegram 送不到你的地址，看 `last_error_message` |
+| `last_error_message` 含 403 | `WEBHOOK_SECRET` 改动后没重跑 `/setup` |
 
 ## 💾 Cloudflare Workers 版部署（有 KV）
 
+相比无 KV 版，多做四步。**如果你只是想有个机器人自动回复，用无 KV 版就够了**，不需要往下看。
+
 ### 新增步骤
 
-1.  **创建 KV 命名空间**：Workers & Pages → KV → 创建，命名为 `tgdm`。
-2.  **绑定到 Worker**：设置 → 绑定 → 添加 KV 命名空间，变量名 `LAST_REPLY_KV`。
-3.  **添加环境变量**：`KEEP_LAST_ONLY = true`。
-4.  使用 `worker-kv.js` 代码。
+1.  **创建 KV 命名空间**：左侧导航 **KV** → **Create Instance** → 命名 `tgdm` → 创建。
+2.  **绑定到 Worker**：回到你的 Worker → **设置** → **绑定** → **添加** → 选 **KV Namespace** → 变量名填 `LAST_REPLY_KV` → 选择刚建的 `tgdm` → 保存。
+3.  **添加环境变量**：`KEEP_LAST_ONLY` = `true`（纯文本）。
+4.  **使用 `worker-withKV.zip` 里的代码**替换编辑器中的内容，重新部署。
 
 ### 工作原理
 
@@ -453,6 +538,56 @@ Worker 会自动处理，无需手动干预：
 *   **JSON 内不要留注释和尾随逗号**，会导致解析失败并静默退回内置默认回复。
 *   **标签必须闭合**：`<yy>文字` 缺少 `</yy>` 时标签不会生效，且会被原样（转义后）发出。
 *   **换行必须用 `</n>`**：JSON 字符串里不能直接写换行符。
+
+## 🔤 三个都叫 "reply" 的东西，别搞混
+
+初学者最容易在这里困惑 —— 项目里有三处带 `reply` 字样的东西，含义完全不同。
+
+| 名字 | 位置 | 类型 | 作用 |
+| :--- | :--- | :--- | :--- |
+| `reply` | `RULES` 里某条规则的字段 | 字段 | **这条规则回复的文字内容** |
+| `DEFAULT_REPLY` | 环境变量 | 变量 | **没有任何规则命中时，回复的文字内容**（可配多条，轮换播报） |
+| `REPLY_MODE` | 环境变量 | 变量 | **回复时是否引用用户的原消息**（控制对话气泡的显示方式） |
+
+### 1. 规则里的 `reply` —— 回复什么文字
+
+```json
+{
+  "keywords": ["你好"],
+  "reply": "你好呀！有什么可以帮你的？"
+}
+```
+
+用户发「你好」→ 机器人回「你好呀！有什么可以帮你的？」
+
+配合 `media` 使用时，`reply` 会变成媒体的说明文字：
+
+```
+配了 media 和 reply  →  发图片，图下方显示 reply 的内容
+只配了 media         →  只发图片，不带任何文字
+只配了 reply         →  发一条纯文字消息
+```
+
+⚠️ 当 `reply` 作为图片/视频说明时，上限是 **1024 字符**；作为纯文字消息时上限 **4096 字符**。媒体规则的 `reply` 要写得短一些。
+
+### 2. `DEFAULT_REPLY` —— 没规则命中时回什么
+
+```json
+["[AutoReply] 你好，有什么可以帮助你的吗？", "[AutoReply] 请稍等"]
+```
+
+配成多条时，机器人会**打乱顺序轮换**播报（每个用户看到的顺序不同，避免重复感）。
+
+它只在「关键词规则都没命中、且 AI 也没判定为广告」时才会用到。默认有三条内置回复，不配也能用。
+
+### 3. `REPLY_MODE` —— 消息要不要挂在用户消息下面
+
+```
+REPLY_MODE = true    →  机器人消息显示为用户消息的「回复」（视觉上像对话）
+REPLY_MODE = false   →  机器人消息独立出现在聊天里
+```
+
+这个只影响**显示方式**，不影响回复内容。默认 `true`，一般不用改。
 
 ## ⚡ 规则优先级与冷却时间
 
